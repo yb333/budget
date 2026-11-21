@@ -44,13 +44,46 @@ function normalizeDate(s) {
   return null;
 }
 const MONTH_RE = /^(1[0-2]|[1-9])月(执行|预测)$/;
-// 内置国务院放假安排（off=放假日, work=调休上班日）；未收录年份按周末双休计算。每年安排发布后随看板更新。
+// 工作日推算引擎：
+// ① 精确层：已发布官方放假安排的年份用 HOLIDAYS 精确表（含调休）；
+// ② 推算层（任意年份自动）：固定节日(元旦/劳动/国庆) + 清明节气公式 + 春节/端午/中秋农历日期表(至2035)，
+//    扣除落在周中的假日；国务院每年人为拼调休无法预知（约2~4天/年误差），预测用途可忽略。
 const HOLIDAYS = {
   2026: {
     off: ['01-01','01-02','01-03','02-15','02-16','02-17','02-18','02-19','02-20','02-21','02-22','02-23','04-04','04-05','04-06','05-01','05-02','05-03','05-04','05-05','06-19','06-20','06-21','09-25','09-26','09-27','10-01','10-02','10-03','10-04','10-05','10-06','10-07'],
     work: ['01-04','02-14','02-28','05-09','09-20','10-10']
   }
 };
+// 春节(正月初一)/端午(五月初五)/中秋(八月十五) 公历日期表（个别农历日或有±1天，误差可忽略）
+const LUNAR_FEST = {
+  2026: { cny: '02-17', dw: '06-19', mq: '09-25' },
+  2027: { cny: '02-06', dw: '06-09', mq: '09-15' },
+  2028: { cny: '01-26', dw: '05-28', mq: '10-03' },
+  2029: { cny: '02-13', dw: '06-16', mq: '09-22' },
+  2030: { cny: '02-03', dw: '06-05', mq: '09-12' },
+  2031: { cny: '01-23', dw: '06-25', mq: '10-01' },
+  2032: { cny: '02-11', dw: '06-12', mq: '09-19' },
+  2033: { cny: '01-31', dw: '06-02', mq: '09-08' },
+  2034: { cny: '02-19', dw: '06-22', mq: '09-27' },
+  2035: { cny: '02-08', dw: '06-11', mq: '09-16' }
+};
+function qingmingOf(Y) {  // 清明节气公式（2000-2099 有效）
+  const c = Y % 100;
+  return '04-' + String(Math.floor(c * 0.2422 + 4.81) - Math.floor(c / 4)).padStart(2, '0');
+}
+function estHolidaySet(Y) {
+  const off = new Set(['01-01', '05-01', '05-02', '10-01', '10-02', '10-03', qingmingOf(Y)]);
+  const f = LUNAR_FEST[Y];
+  if (f) {
+    off.add(f.dw); off.add(f.mq);
+    const cny = new Date(Y + '-' + f.cny + 'T00:00:00');
+    for (let i = -1; i <= 5; i++) {   // 春节窗口：除夕 ~ 初五
+      const d = new Date(cny.getTime() + i * 86400000);
+      off.add(String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+    }
+  }
+  return off;
+}
 function parseMonthHeader(h) {
   const s = String(h || '').replace(/\s/g, '');
   const m = s.match(/^(?:\d{4}年)?(1[0-2]|[1-9])月/);   // 必须以（年份+）N月 开头，避免误匹配"截至11月累计执行"
@@ -148,6 +181,12 @@ async function importFilesAuto(files) {
       const d = fileSnapDate(f);
       mergeExecRows(execByDate[d] = execByDate[d] || {}, parseExecRows(rows));
       parts.push('📄 ' + f.name + '（执行表）→ 快照 ' + d);
+    } else if (kind === 'team') {
+      const groups = parseTeamTable(rows);
+      if (!groups.length) throw new Error('未识别到人员行');
+      state.team = groups.map(g => ({ id: uid(), ...g }));
+      touch('team');
+      parts.push('👥 ' + f.name + '（团队配置）：' + groups.length + ' 组已更新（以数据集为准）');
     } else parts.push('⚠️ ' + f.name + '：未能识别类型，已跳过');
   }
   if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
@@ -278,6 +317,7 @@ function detectKind(rows) {
   const h = (rows[0] || []).join(' ');
   if (/预算来源编码/.test(h)) return 'exec';
   if (/PO编码|资源申请编号/.test(h)) return 'po';
+  if (/人数|数量/.test(h) && /单价|价格|费用/.test(h)) return 'team';
   return '';
 }
 
@@ -457,10 +497,10 @@ function renderImportList() {
       '<div class="file-card"><div class="file-head"><b>' + esc(f.name) + '</b>' +
       (f.error ? '<span style="color:var(--red);font-size:12px">' + esc(f.error) + '</span>'
         : '<select data-fkind="' + fi + '">' +
-        [['', '— 请选择类型 —'], ['po', 'PO 明细'], ['exec', '预算执行表']].map(([v, l]) => '<option value="' + v + '"' + (f.kind === v ? ' selected' : '') + '>' + l + '</option>').join('') +
+        [['', '— 请选择类型 —'], ['po', 'PO 明细'], ['exec', '预算执行表'], ['team', '团队配置']].map(([v, l]) => '<option value="' + v + '"' + (f.kind === v ? ' selected' : '') + '>' + l + '</option>').join('') +
         '</select><span class="muted">' + (f.rows ? f.rows.length + ' 行（含表头）' : '') + '</span>') +
       '</div>' +
-      (f.error ? '' : f.kind === 'po' ? poDiagnose(f) : f.kind === 'exec' ? execDiagnose(f) : '') +
+      (f.error ? '' : f.kind === 'po' ? poDiagnose(f) : f.kind === 'exec' ? execDiagnose(f) : f.kind === 'team' ? teamDiagnose(f) : '') +
       '</div>').join('');
 }
 function poDiagnose(f) {
@@ -478,6 +518,14 @@ function poDiagnose(f) {
       '<div class="muted">若与 Excel 对不上，截图此面板发给维护人。</div>';
   } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
 }
+function teamDiagnose(f) {
+  try {
+    const groups = parseTeamTable(f.rows);
+    const rs = groups.slice(0, 6).map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + g.headcount + '</td><td class="num">' + fmtCny(g.rate) + '</td><td>' + esc(g.project || '—') + '</td></tr>').join('');
+    return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>团队配置</b>，共 ' + groups.length + ' 组（导入后以数据集为准替换现有团队配置）</div>' +
+      '<div class="paste-preview"><table><tr><th>名称</th><th>类型</th><th>人数</th><th>单价</th><th>项目</th></tr>' + rs + '</table></div>';
+  } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
+}
 function execDiagnose(f) {
   try {
     const rows = parseExecRows(f.rows);
@@ -493,6 +541,7 @@ function importAll() {
   const poAll = []; let asOf = 0;
   const execMerged = {}; let execCnt = 0;
   const snapDate = ($('#snapDate') && $('#snapDate').value) || importCtx.snapDate || todayStr();
+  let teamGroups = null;
   importCtx.files.forEach(f => {
     if (f.error || !f.kind) return;
     if (f.kind === 'po') {
@@ -504,8 +553,12 @@ function importAll() {
       mergeExecRows(execMerged, parseExecRows(f.rows));
       execCnt++;
       parts.push('📄 ' + f.name + '（执行表）：已合并');
+    } else if (f.kind === 'team') {
+      teamGroups = parseTeamTable(f.rows);
+      parts.push('👥 ' + f.name + '（团队配置）：' + (teamGroups ? teamGroups.length : 0) + ' 组');
     }
   });
+  if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); touch('team'); }
   if (poAll.length) {
     state.poDataByYear = state.poDataByYear || {};
     state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll };
@@ -612,16 +665,25 @@ function calc() {
 
   // 工作日（默认周末法，可逐月覆盖）
   const wdDefault = mo => {
-    const h = HOLIDAYS[Y] || { off: [], work: [] };
     const p2 = v => String(v).padStart(2, '0');
-    const off = new Set(h.off.map(d => +d.slice(0, 2) === mo ? d : null).filter(Boolean));
-    const work = new Set(h.work.map(d => +d.slice(0, 2) === mo ? d : null).filter(Boolean));
+    const exact = HOLIDAYS[Y];
     const d = new Date(Y, mo - 1, 1); let n = 0;
-    while (d.getMonth() === mo - 1) {
-      const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
-      if (w >= 1 && w <= 5) { if (!off.has(key)) n++; }
-      else if (work.has(key)) n++;
-      d.setDate(d.getDate() + 1);
+    if (exact) {   // 官方精确安排（含调休上班）
+      const off = new Set(exact.off.filter(x => +x.slice(0, 2) === mo));
+      const work = new Set(exact.work.filter(x => +x.slice(0, 2) === mo));
+      while (d.getMonth() === mo - 1) {
+        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
+        if (w >= 1 && w <= 5) { if (!off.has(key)) n++; }
+        else if (work.has(key)) n++;
+        d.setDate(d.getDate() + 1);
+      }
+    } else {      // 推算：周中 − 节假日（不预知调休上班，年误差约2~4天）
+      const off = estHolidaySet(Y);
+      while (d.getMonth() === mo - 1) {
+        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
+        if (w >= 1 && w <= 5 && !off.has(key)) n++;
+        d.setDate(d.getDate() + 1);
+      }
     }
     return n;
   };
@@ -759,7 +821,7 @@ function renderBanner() {
   const el = $('#freshnessBanner');
   if (SHARE_MODE) { el.className = 'banner ok'; el.innerHTML = '🔗 分享只读模式 · 数据截至 <b>' + esc(SHARE_PKG.exportedAt) + '</b> · 如需更新请联系维护人重新发布'; return; }
   const freq = state.meta.updateFreqDays || 14, t = todayStr();
-  const defs = [['po', 'PO明细'], ['exec', '执行表'], ['plan', '规划'], ['grants', '授予流水']];
+  const defs = [['po', 'PO明细'], ['exec', '执行表'], ['team', '团队配置'], ['plan', '规划'], ['grants', '授予流水']];
   const chips = [];
   defs.forEach(([k, label]) => {
     const d = (state.updatedAt || {})[k];
@@ -1018,10 +1080,10 @@ function renderBudget() {
 /* ================= 渲染：PO ================= */
 function renderPO() {
   const c = calc();
+  const exclCnt = c.po ? c.po.rows.length - c.poList.length : 0;
   $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · ' + c.poList.length + ' 行' + (exclCnt ? '（已剔除 ' + exclCnt + ' 行）' : '') + ' · 当月起为平台预测（asOf=' + c.po.asOf + '月）') : '';
   const wrap = $('#poTableWrap');
   if (!c.po) { wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; $('#poFrozenWrap').innerHTML = ''; return; }
-  const exclCnt = c.po.rows.length - c.poList.length;
   const rows = [...c.poList].sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= c.po.asOf ? v : 0);
@@ -1086,7 +1148,7 @@ function renderData() {
     '<input type="file" id="importFile" accept=".json,application/json" style="display:none">' +
     '<button class="btn" data-action="data:demo">示例数据</button>' +
     '<button class="btn danger" data-action="data:clear">清空</button></div>' +
-    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，每次从平台导出文件丢进该文件夹，打开看板<b>自动扫描导入</b>（快照日期=文件导出时间，重复文件自动跳过），无需手动拖拽。</div>' +
+    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，平台导出文件（PO明细/执行表）和<b>团队 Excel</b> 都丢进该文件夹，打开看板<b>自动扫描导入</b>——团队 Excel 改完存盘，下次打开自动生效，无需任何操作（快照日期=文件导出时间，重复文件自动跳过）。</div>' +
     '<div class="muted" style="margin-top:10px"><b>git 同步工作流</b>：主数据建议存 <b>data/budget.json</b>（保存按钮直接写回；打开/恢复可载入）——数据随仓库走，换机器 pull 后「📂打开」即接管。日常也自动存本浏览器 localStorage（无数据库）。分层备份：全量/仅配置/仅数据，v2 旧包自动升级。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。</div>' +
     '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
 
@@ -1126,8 +1188,8 @@ function renderData() {
     const v = (m.workdays && m.workdays[mo] != null && m.workdays[mo] !== '') ? m.workdays[mo] : '';
     wdHtml += '<label class="field"><span class="field-label">' + mo + '月 · 默认 ' + c.workdays(mo) + '</span><input type="number" min="15" max="31" data-wd="' + mo + '" value="' + v + '" placeholder="' + c.workdays(mo) + '"></label>';
   }
-  const hY = HOLIDAYS[Y] ? '已内置 ' + Y + ' 年国务院放假安排（含调休）' : Y + ' 年放假安排未收录，默认按周末双休计算';
-  $('#workdayForm').innerHTML = wdHtml + '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；如个别月份仍不准可手动覆盖，留空即用自动值。</span></div>';
+  const hY = HOLIDAYS[Y] ? Y + ' 年：官方放假安排（含调休）' : (LUNAR_FEST[Y] ? Y + ' 年：节假日引擎自动推算（含农历节日/清明公式；国务院调休拼假无法预知，约有2~4天/年误差）' : Y + ' 年：固定节日+周末法推算');
+  $('#workdayForm').innerHTML = wdHtml + '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；通常无需手动调整，个别月不准可覆盖，留空用自动值。</span></div>';
 }
 
 /* ================= 弹窗 ================= */
@@ -1233,6 +1295,9 @@ function parseTeamLines(text) {
     out.push({ kind, name, headcount: count, rate, project: idx.project >= 0 ? (parts[idx.project] || '') : '' });
   });
   return out;
+}
+function parseTeamTable(rows) {
+  return parseTeamLines(rows.map(r => r.join('\t')).join('\n'));
 }
 function teamPasteModal() {
   openModal('<h3>批量导入团队配置</h3>' +
