@@ -249,7 +249,14 @@ function migrate(old) {
   return null;
 }
 function load() {
-  const normalizePlans = st => { (st.plans || []).forEach(p => { if (p.amountW == null) { p.amountW = wusdOf(p); delete p.amountUsd; } }); };
+  const autobak = obj => {   // 迁移/归一化前自动备份原始数据（防升级毁数据，可手动恢复）
+    try { localStorage.setItem('budgetDash.autobak', JSON.stringify({ t: todayStr() + ' ' + new Date().toTimeString().slice(0, 5), data: obj })); } catch (e) { }
+  };
+  const normalizePlans = st => {
+    const needs = (st.plans || []).some(p => p.amountW == null && p.amountUsd != null);
+    if (needs) autobak(st);
+    (st.plans || []).forEach(p => { if (p.amountW == null) { p.amountW = wusdOf(p); delete p.amountUsd; } });
+  };
   if (SHARE_MODE) {           // 分享模式：只读快照，不读写本机存储
     state = SHARE_PKG.state;
     if (state && state.schemaVersion === 2) { const m = migrate(state); if (m) state = m; }
@@ -1234,6 +1241,14 @@ function renderData() {
     '<div class="muted" style="margin-top:10px"><b>git 同步工作流</b>：主数据建议存 <b>data/budget.json</b>（保存按钮直接写回；打开/恢复可载入）——数据随仓库走，换机器 pull 后「📂打开」即接管。日常也自动存本浏览器 localStorage（无数据库）。分层备份：全量/仅配置/仅数据，v2 旧包自动升级。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。</div>' +
     '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
 
+  // 规划金额疑似过小（旧版按万美金录入被迁移误除以1万）→ 修复入口
+  const plansAll = state.plans || [];
+  const maxW = plansAll.length ? Math.max(...plansAll.map(wusdOf)) : 0;
+  if (plansAll.length && maxW > 0 && maxW < 0.5) {
+    $('#planTableWrap').insertAdjacentHTML('beforebegin',
+      '<div class="cons-diff warn">🩹 检测到规划金额异常小（最大 ' + fmtWusd(maxW) + ' 万美金）——可能是旧版按<b>万美金</b>录入、升级时被误按美元换算。<button class="btn small primary" data-action="repair:wusd">一键修复（所有金额 ×10000）</button>　修复前已自动备份，若数字仍不对可到「分层备份→全量」核对。</div>');
+  }
+
   // 团队配置
   const team = state.team || [];
   const tp = sum(team.filter(g => g.kind === 'po'), g => (g.headcount || 0) * (g.rate || 0));
@@ -1668,6 +1683,16 @@ async function handleAction(action, el, e) {
     return;
   }
 
+  if (action === 'repair:wusd') {
+    const plansAll = state.plans || [];
+    if (!plansAll.length) return;
+    if (!confirm('将所有规划金额 ×10000 恢复为你当时录入的万美金数字。\n\n注意：旧版录入时小数会被四舍五入（如 5.5 → 6），修复后请对照清单核对。\n修复前会自动备份当前数据。确认执行？')) return;
+    try { localStorage.setItem('budgetDash.autobak', JSON.stringify({ t: todayStr() + ' ' + new Date().toTimeString().slice(0, 5), data: state })); } catch (e) { }
+    plansAll.forEach(p => { p.amountW = Math.round(wusdOf(p) * 10000 * 10000) / 10000; });
+    touch('plan'); save();
+    alert('已修复 ' + plansAll.length + ' 项规划金额（×10000）。请到规划表核对数值，小数位如与清单不符请手动改。');
+    return;
+  }
   if (action === 'plan:add') return planModal(null);
   if (action === 'plan:paste') return planPasteModal();
   if (action === 'plan:pasteGo') return planPasteGo(el.dataset.mode);
