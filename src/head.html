@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>年度预算执行看板</title>
+<style>
+:root{
+  --bg:#f4f6fa; --card:#fff; --line:#e5e9f2; --text:#1c2333; --muted:#6b7489;
+  --blue:#3b6ef5; --blue-bg:#eef3fe; --green:#18a058; --green-bg:#e8f7ef;
+  --amber:#d97706; --amber-bg:#fef3e2; --red:#dc2626; --red-bg:#fdecec;
+  --teal:#0d9488; --teal-bg:#e6f7f5; --gray:#98a1b3; --purple:#7c5cd6;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 24px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.topbar h1{font-size:18px;margin:0;display:flex;align-items:center;gap:10px}
+.year-badge{background:var(--blue-bg);color:var(--blue);border-radius:8px;padding:2px 10px;font-size:13px;font-weight:600}
+.banner{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:5px 12px;border-radius:8px;font-size:13px;max-width:100%}
+.banner.warn{background:var(--amber-bg);color:var(--amber)}
+.banner.ok{background:var(--green-bg);color:var(--green)}
+.chip{background:#fff;border:1px solid currentColor;border-radius:12px;padding:0 8px;font-size:12px;white-space:nowrap}
+.tabs{display:flex;gap:4px;padding:0 24px;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{padding:10px 18px;border:none;background:none;font-size:14px;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+.summary-bar{background:linear-gradient(90deg,var(--blue),#5a8bff);color:#fff;border-radius:12px;padding:12px 18px;margin-top:16px;font-size:14px;line-height:1.8}
+.summary-bar b{font-size:15px}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.kpi-label{font-size:12px;color:var(--muted)}
+.kpi-value{font-size:19px;font-weight:700;margin:2px 0 1px;font-variant-numeric:tabular-nums}
+.kpi-sub{font-size:11px;color:var(--muted)}
+.kpi-value.c-green{color:var(--green)} .kpi-value.c-red{color:var(--red)} .kpi-value.c-blue{color:var(--blue)} .kpi-value.c-amber{color:var(--amber)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-top:16px}
+.grid-2 .card{margin-top:0}
+.card-title{font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.card-sub{font-size:12px;color:var(--muted);font-weight:400}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;color:var(--muted);font-weight:500;border-bottom:1px solid var(--line);padding:6px 8px;white-space:nowrap}
+.tbl td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tr:hover td{background:#fafbfe}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tbl tfoot td{font-weight:600;border-top:2px solid var(--line)}
+.tbl-wrap{overflow-x:auto}
+.st{padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
+.st-open{background:var(--blue-bg);color:var(--blue)}
+.st-pending{background:var(--amber-bg);color:var(--amber)}
+.st-accepted{background:var(--green-bg);color:var(--green)}
+.btn{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:6px 14px;cursor:pointer;font-size:13px}
+.btn:hover{border-color:var(--blue);color:var(--blue)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.primary:hover{opacity:.9;color:#fff}
+.btn.danger{color:var(--red);border-color:#f3c1c1}
+.btn.danger:hover{background:var(--red-bg);border-color:var(--red);color:var(--red)}
+.btn.small{padding:2px 9px;font-size:12px;border-radius:6px}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.muted{color:var(--muted);font-size:12px}
+.empty{color:var(--muted);font-size:13px;padding:18px 0;text-align:center}
+.pbar{position:relative;height:14px;background:#edf0f7;border-radius:7px;min-width:120px}
+.pbar-fill{height:100%;border-radius:7px;background:var(--blue);transition:width .3s}
+.pbar-fill.f-green{background:var(--green)} .pbar-fill.f-red{background:var(--red)} .pbar-fill.f-amber{background:var(--amber)}
+.mark{position:absolute;top:-3px;bottom:-3px;width:0;border-left:2px solid var(--green)}
+.mark-time{border-left-style:dashed;border-color:var(--amber)}
+.exec-row{display:grid;grid-template-columns:170px 1fr 62px;gap:10px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.exec-row:last-of-type{border-bottom:none}
+.exec-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exec-val{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.exec-legend{display:flex;gap:14px;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.lg{display:inline-flex;align-items:center;gap:4px}
+.lg i{display:inline-block;width:12px;height:2px}
+.chart-box{position:relative;height:300px}
+.risk-item{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px;align-items:baseline}
+.risk-item:last-child{border-bottom:none}
+.risk-lv{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;position:relative;top:4px}
+.risk-lv.red{background:var(--red)} .risk-lv.amber{background:var(--amber)} .risk-lv.green{background:var(--green)} .risk-lv.info{background:var(--gray)}
+.act-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line);font-size:13px;align-items:flex-start}
+.act-item:last-child{border-bottom:none}
+.act-no{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:var(--blue-bg);color:var(--blue);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.act-item.done .act-no{background:var(--green-bg);color:var(--green)}
+.act-item.done .act-body{opacity:.5;text-decoration:line-through}
+.act-body{flex:1}
+.act-done-btn{flex-shrink:0}
+.cons-table{width:100%;font-size:13px;border-collapse:collapse}
+.cons-table td{padding:4px 6px;border-bottom:1px dashed var(--line)}
+.cons-table td:last-child{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.cons-diff{padding:8px 12px;border-radius:8px;margin-top:8px;font-size:13px}
+.cons-diff.ok{background:var(--green-bg);color:var(--green)}
+.cons-diff.warn{background:var(--red-bg);color:var(--red)}
+.cons-diff.info{background:var(--amber-bg);color:var(--amber)}
+.modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:flex-start;justify-content:center;padding:56px 16px;z-index:50;overflow:auto}
+.modal{background:#fff;border-radius:14px;padding:20px 22px;width:680px;max-width:100%;box-shadow:0 20px 50px rgba(15,23,42,.25)}
+.modal h3{margin:0 0 12px;font-size:16px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px}
+.field{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.field-label{color:var(--muted);font-size:12px}
+.field input,.field select,textarea{border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:13px;width:100%;font-family:inherit}
+.field input:focus,.field select:focus,textarea:focus{outline:none;border-color:var(--blue)}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.dropzone{border:2px dashed var(--line);border-radius:10px;padding:18px;text-align:center;color:var(--muted);margin:10px 0;font-size:13px}
+.dropzone.over{border-color:var(--blue);color:var(--blue);background:var(--blue-bg)}
+.file-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.file-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;margin-bottom:6px}
+.file-head select,.file-head input[type=date]{font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px}
+.onboard{background:#fff;border:1px dashed var(--blue);border-radius:12px;padding:22px;margin-top:16px;text-align:center}
+.onboard h2{font-size:16px;margin:0 0 6px}
+.wd-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+.wd-grid .field input{padding:5px 8px}
+/* 分享只读模式：隐藏所有操作按钮与数据管理页 */
+body.share [data-action]{display:none!important}
+body.share #tabNav button[data-tab="data"]{display:none}
+@media(max-width:1100px){.grid-2{grid-template-columns:1fr}}
+@media print{.tabs,.topbar .banner,.btn{display:none!important}body{background:#fff}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div><h1>📊 年度预算执行看板
+    <button class="btn small" data-action="year:prev" title="上一年度">◀</button>
+    <span class="year-badge" id="yearBadge"></span>
+    <button class="btn small" data-action="year:next" title="下一年度">▶</button>
+  </h1></div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button class="btn" id="quickLoadBtn" data-action="data:openRecent" style="display:none">📂 载入数据文件</button>
+    <button class="btn primary" data-action="import:open">📥 导入平台数据</button>
+    <div id="freshnessBanner"></div>
+  </div>
+</header>
+<nav class="tabs" id="tabNav">
+  <button data-tab="now" class="active">现在与行动</button>
+  <button data-tab="budget">预算来源</button>
+  <button data-tab="po">PO 台账</button>
+  <button data-tab="data">数据管理</button>
+</nav>
+<main>
+  <section id="tab-now" class="tab-panel active">
+    <div id="onboard"></div>
+    <div class="summary-bar" id="summaryBar"></div>
+    <div class="card">
+      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划USD×当年汇率 · OD 数据截至上月</span></div>
+      <div id="nowProgress"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">② 风险 <span class="card-sub">红=需尽快处理 · 黄=关注 · 灰=口径说明</span></div>
+      <div id="nowRisk"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">③ 本周期行动清单 <span class="card-sub">按优先级排序 · 完成可勾选（当月有效）</span></div>
+      <div id="nowActions"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card"><div class="card-title">月度消耗节奏 <span class="card-sub">PO/OD 实际 + 预测 vs 平均节奏</span></div><div class="chart-box"><canvas id="monthlyChart"></canvas></div></div>
+      <div class="card"><div class="card-title">执行率明细 <span class="card-sub">目标线 + 时间进度线</span></div><div id="execRates"></div></div>
+    </div>
+    <div class="grid-2">
+      <div class="card"><div class="card-title">授予进度与资金水位 <span class="card-sub">催 BA 依据</span></div><div id="grantPanel"></div></div>
+      <div class="card"><div class="card-title">数据校验 <span class="card-sub">PO明细 vs 执行表 · 授予流水 vs 执行表</span></div><div id="consistency"></div></div>
+    </div>
+  </section>
+  <section id="tab-budget" class="tab-panel">
+    <div class="card">
+      <div class="card-title">预算来源执行总览
+        <span class="btn-row">
+          <button class="btn" data-action="link:manage">🔗 编码关联</button>
+          <button class="btn primary" data-action="plan:add">＋ 新增规划项</button>
+        </span>
+      </div>
+      <div class="tbl-wrap" id="budgetTableWrap"></div>
+    </div>
+  </section>
+  <section id="tab-po" class="tab-panel">
+    <div class="card">
+      <div class="card-title">PO 台账 <span class="card-sub" id="poSub"></span></div>
+      <div class="tbl-wrap" id="poTableWrap"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card"><div class="card-title">在途与返还 <span class="card-sub">OPEN PO 未执行部分 = 冻结；超出执行窗口的预测 ≈ 验收后返还</span></div><div id="poFrozenWrap"></div></div>
+      <div class="card"><div class="card-title">下月 PO 与 OD 建议 <span class="card-sub" id="poAdviceSub"></span></div><div id="poAdviceWrap"></div></div>
+    </div>
+  </section>
+  <section id="tab-data" class="tab-panel">
+    <div class="grid-2">
+      <div class="card"><div class="card-title">基础参数 <span class="card-sub">汇率/目标/年终奖/出勤/更新频率</span></div><div id="metaForm"></div></div>
+      <div class="card"><div class="card-title">数据管理 <span class="card-sub">分层备份：配置与数据可分开迁移</span></div><div id="dataMgmt"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">团队配置（预测用） <button class="btn primary" data-action="team:add">＋ 新增人员组</button></div>
+      <div class="muted" style="margin-bottom:8px">按组维护（如「高级开发×3·日单价2200」）；PO 组按<b>日单价×当月工作日</b>、OD 组按<b>月单价</b>计。人数变化时更新即可，看板自动校准理论值与历史实际的偏差。</div>
+      <div class="tbl-wrap" id="teamTableWrap"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">年初规划（USD） <span class="btn-row"><button class="btn" data-action="plan:paste">📥 批量粘贴</button><button class="btn primary" data-action="plan:add">＋ 新增</button></span></div>
+      <div class="muted" style="margin-bottom:8px">录入名称与美金金额；编码留空，平台授予出现该预算来源后再「编码关联」补上。</div>
+      <div class="tbl-wrap" id="planTableWrap"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">授予流水（辅助记录，CNY） <button class="btn primary" data-action="grant:add">＋ 记一笔</button></div>
+      <div class="muted" style="margin-bottom:8px">预算来源授予到账确认时随手记录；与执行表「本年度授予」交叉校验。</div>
+      <div class="tbl-wrap" id="grantTableWrap"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">每月工作日（天） <span class="card-sub">默认按周末计算 · 按国务院放假安排微调一次即可</span></div>
+      <div id="workdayForm"></div>
+    </div>
+  </section>
+</main>
+<div id="modalRoot"></div>
