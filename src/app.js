@@ -678,10 +678,14 @@ const curYear = () => state.meta.year;
 // 规划金额单位 WUSD（万美金，保留小数）：amountW 为准；旧数据 amountUsd（美元整数）自动换算
 const wusdOf = p => (p && p.amountW != null ? +p.amountW : ((p && p.amountUsd) || 0) / 10000);
 function fmtWusd(v) { const n = +v; if (!Number.isFinite(n)) return '—'; let t = n.toFixed(2); if (t.indexOf('.') >= 0) t = t.replace(/0+$/, '').replace(/\.$/, ''); return t; }
-function parseWusd(s) {  // 输入容错：'5.5'→5.5；'5.5万'→5.5；'55000'或≥1000 视为美元自动÷1万
-  const v = parseMoney(s);
-  if (v == null) return null;
-  return v >= 1000 ? v / 10000 : v;
+function parseWusd(s) {  // 万美金，保留小数；'55000'等≥1000 视为美元自动÷1万（不走 parseMoney 的取整）
+  if (s == null || s === '') return null;
+  let t = String(s).trim().replace(/[¥$，,\s]/g, '');
+  if (!t) return null;
+  t = t.replace(/[万wW]$/, '');
+  const n = Number(t);
+  if (!Number.isFinite(n)) return null;
+  return n >= 1000 ? n / 10000 : n;
 }
 const yearParams = y => Object.assign({}, defaultYearParams(), (state.years || {})[y] || {});
 const plansOf = y => (state.plans || []).filter(p => p.year === y);
@@ -1055,7 +1059,7 @@ function renderNow() {
   if (c.openCnt > 0) acts.push({ t: '催验收：' + c.openCnt + ' 个 OPEN PO 在途冻结 ' + fmtCny(c.poFrozen) + '，预计返还 ' + fmtCny(c.poReturn) + '（验收周期约 1 个月）' });
   if (state.team.length) {
     const days = state.meta.lastHcCheck ? daysBetween(state.meta.lastHcCheck, todayStr()) : null;
-    if (days == null || days > 35) acts.push({ t: '确认团队人数是否有变化（上次确认：' + (state.meta.lastHcCheck || '从未') + '），有变化到「数据管理→团队配置」更新', btn: 'hc:confirm', btnTxt: '人数没变，确认' });
+    if (days == null || days > 35) acts.push({ t: '确认团队人数是否有变化（上次确认：' + (state.meta.lastHcCheck || '从未') + '），有变化请更新团队 Excel 放入数据集文件夹', btn: 'hc:confirm', btnTxt: '人数没变，确认' });
   }
   if (c.curM === 5 || c.curM === 11) acts.push({ t: '为 ' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算+年终奖') + '做准备：确认 OD 额度充足，' + (c.curM === 5 ? '必要时调拨' : '并校准参数里的年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）') });
   const stale = ['po', 'exec'].some(k => { const d = (state.updatedAt || {})[k]; const days = d ? daysBetween(d, todayStr()) : null; return days == null || days > freq; });
@@ -1286,15 +1290,20 @@ function renderData() {
       '</table>' + ((Math.abs(c.team.calibPo || 0) > 0.1 || Math.abs(c.team.calibOd || 0) > 0.1) ? '<div class="cons-diff info">ℹ️ 理论与实际偏差超 10%：检查人数、单价或出勤系数。</div>' : '<div class="cons-diff ok">✓ 团队配置与历史实际吻合</div>');
   }
   $('#teamTableWrap').innerHTML = (!team.length ? '<div class="empty">还没有团队配置——不配也能用（预测退回历史外推），配上后扩编/缩编的下月预测立即准确。</div>' :
-    '<table class="tbl"><thead><tr><th>组名</th><th>类型</th><th class="num">人数</th><th class="num">单价(¥)</th><th>花钱项目</th><th>操作</th></tr></thead><tbody>' +
-    team.map(g => '<tr><td><b>' + esc(g.name) + '</b></td><td><span class="st st-' + (g.kind === 'po' ? 'open' : 'accepted') + '">' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</span></td><td class="num">' + (g.headcount || 0) + '</td><td class="num">' + fmtCny(g.rate || 0) + '</td><td>' + esc(g.project || '—') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn small" data-action="team:edit" data-id="' + g.id + '">编辑</button> <button class="btn small danger" data-action="team:del" data-id="' + g.id + '">删除</button></td></tr>').join('') + '</tbody></table>') + calib;
+    '<table class="tbl"><thead><tr><th>组名</th><th>类型</th><th class="num">人数</th><th class="num">单价(¥)</th><th>花钱项目</th></tr></thead><tbody>' +
+    team.map(g => '<tr><td><b>' + esc(g.name) + '</b></td><td><span class="st st-' + (g.kind === 'po' ? 'open' : 'accepted') + '">' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</span></td><td class="num">' + (g.headcount || 0) + '</td><td class="num">' + fmtCny(g.rate || 0) + '</td><td>' + esc(g.project || '—') + '</td></tr>').join('') + '</tbody></table>') + calib;
 
   const pw = $('#planTableWrap');
   pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项。</div>' :
-    '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => '<tr><td><b>' + esc(p.name) + '</b></td><td>' + (p.code ? esc(p.code) : '<span class="muted">待关联</span>') + '</td><td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td><td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td>' + esc(p.note || '') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn small" data-action="plan:edit" data-id="' + p.id + '">编辑</button> <button class="btn small danger" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>';
+    '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标%</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
+    c.plansY.map(p => '<tr><td><b>' + esc(p.name) + '</b></td>' +
+      '<td><input data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px"></td>' +
+      '<td class="num"><input data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
+      '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
+      '<td class="num"><input data-pedit="' + p.id + '" data-f="target" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" inputmode="decimal" placeholder="默认" style="width:56px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
+      '<td>' + esc(p.note || '') + '</td>' +
+      '<td style="white-space:nowrap"><button class="btn small" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>' +
+    '<div class="muted" style="margin-top:6px">✏️ 金额/编码/目标可直接在表格里点开修改（万美金保留小数；目标留空=年度默认、0=不考核），改完点别处即自动保存。</div>';
 
   const gw = $('#grantTableWrap');
   const logs = [...(state.grantLogs || [])].sort((a, b) => a.date < b.date ? 1 : -1);
@@ -1832,6 +1841,26 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   if (e.target.id === 'snapDate' && importCtx) { importCtx.snapDate = e.target.value; return; }
   if (e.target.matches('[data-fkind]') && importCtx) { importCtx.files[+e.target.dataset.fkind].kind = e.target.value; return; }
+  if (e.target.matches('[data-pedit]')) {   // 规划表内联编辑（失焦保存）
+    const id2 = e.target.dataset.pedit, f = e.target.dataset.f, p = state.plans.find(x => x.id === id2);
+    if (!p) return;
+    const v = e.target.value.trim();
+    if (f === 'amountW') {
+      const w = parseWusd(v);
+      if (w == null || w <= 0) { alert('金额无效（万美金，如 5.5）'); e.target.value = p.amountW != null ? p.amountW : ''; return; }
+      p.amountW = w;
+    } else if (f === 'code') {
+      p.code = v || '';
+    } else if (f === 'target') {
+      if (v === '') p.target = null;
+      else { const tv = parseFloat(v); if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('目标应为 0~100 或留空'); e.target.value = p.target != null ? Math.round(p.target * 100) : ''; return; } p.target = tv / 100; }
+    }
+    touch('plan'); saveSilent();
+    const cnyCell = $('#pcny-' + id2);
+    if (cnyCell) cnyCell.textContent = fmtCny(wusdOf(p) * 10000 * yearParams(curYear()).fxRate);
+    renderBanner();
+    return;
+  }
   if (e.target.matches('[data-linkcode]')) {
     const code = e.target.dataset.linkcode, v = e.target.value;
     if (v === '__new__') {
