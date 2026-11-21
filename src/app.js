@@ -247,6 +247,22 @@ async function parseWorkbookFile(file) {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     if (!ws) throw new Error('无工作表');
+    // 修复 dimension 声明不完整（Excel 容忍但解析库按声明范围截断）：按实际单元格扩展范围
+    try {
+      const rg = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      let maxR = 0, maxC = 0;
+      Object.keys(ws).forEach(k => {
+        if (k[0] === '!') return;
+        const a = XLSX.utils.decode_cell(k);
+        if (a.r > maxR) maxR = a.r;
+        if (a.c > maxC) maxC = a.c;
+      });
+      if (maxR > rg.e.r || maxC > rg.e.c) {
+        rg.e.r = Math.max(rg.e.r, maxR);
+        rg.e.c = Math.max(rg.e.c, maxC);
+        ws['!ref'] = XLSX.utils.encode_range(rg);
+      }
+    } catch (e) { }
     rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }).map(r => r.map(c => String(c == null ? '' : c).trim()));
   }
   return rows.filter(r => r.some(c => c !== ''));
@@ -281,17 +297,29 @@ function parsePoRows(rows) {
   if (col.poNo == null && col.resNo == null) throw new Error('未找到 PO 编号列');
   const asOf = col.fcMonths && col.fcMonths.length ? Math.min(...col.fcMonths) : 13;
   const out = [];
+  // 平台导出的 PO 级列（编号/名称/状态/起止/金额/项目）常为纵向合并单元格：
+  // 仅首行有值、后续行为空 → 向下填充；金额被填充的行打标记（按 PO 计金额而非按行累加）
+  const FILL = ['resNo', 'resName', 'poNo', 'status', 'startDate', 'endDate', 'amount', 'itProject'];
+  const last = {};
   rows.slice(1).forEach(r => {
+    let amtFilled = false;
+    FILL.forEach(k => {
+      if (col[k] == null) return;
+      const v = String(r[col[k]] == null ? '' : r[col[k]]).trim();
+      if (v !== '') last[k] = v;
+      else if (last[k] != null) { r[col[k]] = last[k]; if (k === 'amount') amtFilled = true; }
+    });
     const poNo = (col.poNo != null ? r[col.poNo] : '') || (col.resNo != null ? r[col.resNo] : '');
     if (!poNo) return;
     const months = {};
     if (col.months) Object.entries(col.months).forEach(([m, i]) => { const v = parseMoney(r[i]); if (v != null) months[+m] = (months[+m] || 0) + v; });
     out.push({
-      poNo, resName: col.resName != null ? r[col.resName] : '',
+      poNo, resName: col.resName != null ? String(r[col.resName] == null ? '' : r[col.resName]).trim() : '',
       status: /CLOSED|close|验收|结/.test(String(col.status != null ? r[col.status] : '')) ? 'CLOSED' : 'OPEN',
       startDate: normalizeDate(col.startDate != null ? r[col.startDate] : '') || '',
       amount: parseMoney(col.amount != null ? r[col.amount] : '') || 0,
-      itProject: col.itProject != null ? r[col.itProject] : '',
+      amtFilled,
+      itProject: col.itProject != null ? String(r[col.itProject] == null ? '' : r[col.itProject]).trim() : '',
       budgetCode: col.budgetCode != null ? String(r[col.budgetCode]).trim() : '',
       months
     });
@@ -436,7 +464,9 @@ function poDiagnose(f) {
       const mTxt = Object.entries(r.months).map(([m, v]) => m + '月' + (v >= 10000 ? (v / 10000).toFixed(1) + 'w' : v)).join(' ');
       return '<tr><td>' + esc(r.poNo) + '</td><td>' + esc(r.budgetCode) + '</td><td>' + esc(r.startDate || '—') + '</td><td class="num">' + fmtCny(r.amount) + '</td><td>' + r.status + '</td><td class="num">' + fmtCny(mSum) + '</td><td class="muted">' + esc(mTxt || '无月度值') + '</td></tr>';
     }).join('');
-    return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>PO明细</b>，执行/预测分界月 asOf=<b>' + asOf + '</b>（<' + asOf + '月=实际，≥' + asOf + '月=平台预测），共 ' + rows.length + ' 行</div>' +
+    const dataRows = f.rows.length - 1;
+    const skipped = dataRows - rows.length;
+    return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>PO明细</b>，文件读取 <b>' + f.rows.length + '</b> 行（含表头）→ 有效解析 <b>' + rows.length + '</b> 行' + (skipped > 0 ? '，<span style="color:var(--amber)">跳过 ' + skipped + ' 行（PO编号列为空）</span>' : '') + '；执行/预测分界月 asOf=<b>' + asOf + '</b>（<' + asOf + '月=实际，≥' + asOf + '月=平台预测）</div>' +
       '<div class="paste-preview"><table><tr><th>PO编码</th><th>预算来源</th><th>费用起始</th><th>金额</th><th>状态</th><th>月度合计</th><th>各月读到的值</th></tr>' + rs + '</table></div>' +
       '<div class="muted">若与 Excel 对不上，截图此面板发给维护人。</div>';
   } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
@@ -533,6 +563,7 @@ function calc() {
   const poMonthlyAct = {}, poMonthlyFc = {}, poActByCode = {};
   let poFrozen = 0, poReturn = 0, openCnt = 0;
   const poList = po ? po.rows : [];
+  const poAgg = {};   // 同一 PO 可能拆成多行（多个预算来源）：金额是 PO 级合并值，只算一次
   poList.forEach(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < (po ? po.asOf : 13) ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= (po ? po.asOf : 13) ? v : 0);
@@ -541,7 +572,15 @@ function calc() {
       if (mi < po.asOf) { poMonthlyAct[mi] = (poMonthlyAct[mi] || 0) + v; poActByCode[r.budgetCode] = (poActByCode[r.budgetCode] || 0) + v; }
       else poMonthlyFc[mi] = (poMonthlyFc[mi] || 0) + v;
     });
-    if (r.status === 'OPEN') { openCnt++; poFrozen += Math.max(r.amount - act, 0); poReturn += fc; }
+    const key = r.poNo + '|' + (r.itProject || '');
+    const g = poAgg[key] = poAgg[key] || { amount: 0, amountSum: 0, act: 0, fc: 0, status: r.status, amtFilled: false };
+    g.amountSum += r.amount || 0;
+    g.amtFilled = g.amtFilled || !!r.amtFilled;
+    g.amount = g.amtFilled ? Math.max(g.amount, r.amount || 0) : g.amountSum;
+    g.act += act; g.fc += fc; g.status = r.status;
+  });
+  Object.values(poAgg).forEach(g => {
+    if (g.status === 'OPEN') { openCnt++; poFrozen += Math.max(g.amount - g.act, 0); poReturn += g.fc; }
   });
 
   // OD 月度历史（执行表快照差值）
