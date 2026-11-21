@@ -713,7 +713,9 @@ function calc() {
     firstSnap = false; prevOd = t;
   });
   const normalDeltas = Object.entries(odMonthly).filter(([mo]) => +mo !== 6 && +mo !== 12).map(([, v]) => v).slice(-3);
-  const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (snaps.length > 1 ? odExec / Math.max(curM - 1, 1) : 0);
+  // 无差值历史（仅一次导入）时：OD 累计执行 ÷ 已过月数（快照月-1，执行表口径为 1-上月）估算月均
+  const odMonths = snaps.length ? Math.max(+(snaps[snaps.length - 1].date.slice(5, 7)) - 1, 1) : 1;
+  const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (odExec > 0 ? odExec / odMonths : 0);
 
   // 工作日（默认周末法，可逐月覆盖）
   const wdDefault = mo => {
@@ -1025,6 +1027,9 @@ function renderNow() {
     '<span class="lg"><i style="border-left:2px dashed var(--amber);width:0;background:none"></i>时间进度</span>' +
     '<span class="lg"><i style="background:var(--blue)"></i>实际</span></div>';
   drawChart(c);
+  $('#chartHint').innerHTML = (c.snap && c.snaps.length < 2)
+    ? 'ℹ️ OD 月度柱需要<b>至少两次导入</b>才有（相邻执行表快照的差值）；当前仅 1 次导入，OD 月均按「累计执行 ÷ 已过月数」估算（' + fmtCny(c.odAvg) + '/月），下次导入后自动校准。'
+    : ''; 
 
   let gHtml = '';
   if (!c.snap) gHtml = '<div class="empty">尚未导入执行表。</div>';
