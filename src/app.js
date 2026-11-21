@@ -256,12 +256,33 @@ function load() {
     const needs = (st.plans || []).some(p => p.amountW == null && p.amountUsd != null);
     if (needs) autobak(st);
     (st.plans || []).forEach(p => { if (p.amountW == null) { p.amountW = wusdOf(p); delete p.amountUsd; } });
+    if (needs) saveSilent();
+  };
+  // 存量团队数据归组：同类型+同单价的多行（历史按人存的）合并为一组
+  const normalizeTeam = st => {
+    const t = st.team || [];
+    const key = g => g.kind + '|' + g.rate;
+    const map = new Map();
+    t.forEach(g => {
+      const k = key(g);
+      if (!map.has(k)) map.set(k, { kind: g.kind, rate: g.rate, headcount: 0, names: [] });
+      const m = map.get(k);
+      m.headcount += g.headcount || 1;
+      m.names.push(g.name || '');
+    });
+    const merged = Array.from(map.values());
+    if (merged.length < t.length) {   // 有可合并的：备份后重写并落盘
+      autobak(st);
+      st.team = merged.map(m => ({ id: uid(), kind: m.kind, rate: m.rate, headcount: m.headcount, project: '', name: teamGroupName(m.kind, m.rate) }));   // 按人存的旧数据：统一按单价命名
+      saveSilent();
+    }
   };
   if (SHARE_MODE) {           // 分享模式：只读快照，不读写本机存储
     state = SHARE_PKG.state;
     if (state && state.schemaVersion === 2) { const m = migrate(state); if (m) state = m; }
     if (!state || state.schemaVersion !== 3) state = defaultState();
     normalizePlans(state);
+    normalizeTeam(state);
     return;
   }
   try {
@@ -271,6 +292,7 @@ function load() {
       while (obj && obj.schemaVersion < 3) { const m = migrate(obj); if (!m) { obj = null; break; } obj = m; }
       state = obj && obj.schemaVersion === 3 ? obj : defaultState();
       if (state && state.plans) normalizePlans(state);
+      if (state && state.team) normalizeTeam(state);
     } else {
       // v2 旧键自动升级接管
       const old2 = localStorage.getItem('budgetDash.v2');
@@ -351,6 +373,7 @@ async function parseAllSheets(file) {
   });
   return out;
 }
+function teamGroupName(kind, rate) { return (kind === 'po' ? '日单价' : '月单价') + fmtCny(rate); }
 // 页签式团队表：页签名含 PO/OD 区分渠道，每行一人，只取 姓名+单价(+可选职级) 列，其余列忽略
 // 展示时同单价自动归组（有职级列用职级做组名，否则按单价命名），明细留在用户 Excel 里
 function parseTeamSheets(sheets) {
@@ -379,7 +402,7 @@ function parseTeamSheets(sheets) {
   });
   const groups = Array.from(map.values()).map(g => ({
     kind: g.kind, headcount: g.headcount, rate: g.rate, project: '',
-    name: g.level || ((g.kind === 'po' ? '日单价' : '月单价') + fmtCny(g.rate))
+    name: g.level || teamGroupName(g.kind, g.rate)
   }));
   return { persons, groups, notes };
 }
