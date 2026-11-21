@@ -44,6 +44,13 @@ function normalizeDate(s) {
   return null;
 }
 const MONTH_RE = /^(1[0-2]|[1-9])月(执行|预测)$/;
+// 内置国务院放假安排（off=放假日, work=调休上班日）；未收录年份按周末双休计算。每年安排发布后随看板更新。
+const HOLIDAYS = {
+  2026: {
+    off: ['01-01','01-02','01-03','02-15','02-16','02-17','02-18','02-19','02-20','02-21','02-22','02-23','04-04','04-05','04-06','05-01','05-02','05-03','05-04','05-05','06-19','06-20','06-21','09-25','09-26','09-27','10-01','10-02','10-03','10-04','10-05','10-06','10-07'],
+    work: ['01-04','02-14','02-28','05-09','09-20','10-10']
+  }
+};
 function parseMonthHeader(h) {
   const s = String(h || '').replace(/\s/g, '');
   const m = s.match(/^(?:\d{4}年)?(1[0-2]|[1-9])月/);   // 必须以（年份+）N月 开头，避免误匹配"截至11月累计执行"
@@ -568,20 +575,23 @@ function calc() {
   poList.forEach(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < (po ? po.asOf : 13) ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= (po ? po.asOf : 13) ? v : 0);
+    // 预计返还 = 超出所属月（费用起始月）的预测：所属月内的预测即将执行掉，不算返还
+    const startM = r.startDate ? +String(r.startDate).slice(5, 7) : 0;
+    const refund = sum(Object.entries(r.months), ([mm, v]) => (+mm >= (po ? po.asOf : 13) && +mm > startM) ? v : 0);
     Object.entries(r.months).forEach(([mm, v]) => {
       const mi = +mm;
       if (mi < po.asOf) { poMonthlyAct[mi] = (poMonthlyAct[mi] || 0) + v; poActByCode[r.budgetCode] = (poActByCode[r.budgetCode] || 0) + v; }
       else poMonthlyFc[mi] = (poMonthlyFc[mi] || 0) + v;
     });
     const key = r.poNo + '|' + (r.itProject || '');
-    const g = poAgg[key] = poAgg[key] || { amount: 0, amountSum: 0, act: 0, fc: 0, status: r.status, amtFilled: false };
+    const g = poAgg[key] = poAgg[key] || { amount: 0, amountSum: 0, act: 0, fc: 0, refund: 0, status: r.status, amtFilled: false };
     g.amountSum += r.amount || 0;
     g.amtFilled = g.amtFilled || !!r.amtFilled;
     g.amount = g.amtFilled ? Math.max(g.amount, r.amount || 0) : g.amountSum;
-    g.act += act; g.fc += fc; g.status = r.status;
+    g.act += act; g.fc += fc; g.refund += refund; g.status = r.status;
   });
   Object.values(poAgg).forEach(g => {
-    if (g.status === 'OPEN') { openCnt++; poFrozen += Math.max(g.amount - g.act, 0); poReturn += g.fc; }
+    if (g.status === 'OPEN') { openCnt++; poFrozen += Math.max(g.amount - g.act, 0); poReturn += g.refund; }
   });
 
   // OD 月度历史（执行表快照差值）
@@ -601,7 +611,20 @@ function calc() {
   const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (snaps.length > 1 ? odExec / Math.max(curM - 1, 1) : 0);
 
   // 工作日（默认周末法，可逐月覆盖）
-  const wdDefault = mo => { const d = new Date(Y, mo - 1, 1); let n = 0; while (d.getMonth() === mo - 1) { const w = d.getDay(); if (w >= 1 && w <= 5) n++; d.setDate(d.getDate() + 1); } return n; };
+  const wdDefault = mo => {
+    const h = HOLIDAYS[Y] || { off: [], work: [] };
+    const p2 = v => String(v).padStart(2, '0');
+    const off = new Set(h.off.map(d => +d.slice(0, 2) === mo ? d : null).filter(Boolean));
+    const work = new Set(h.work.map(d => +d.slice(0, 2) === mo ? d : null).filter(Boolean));
+    const d = new Date(Y, mo - 1, 1); let n = 0;
+    while (d.getMonth() === mo - 1) {
+      const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
+      if (w >= 1 && w <= 5) { if (!off.has(key)) n++; }
+      else if (work.has(key)) n++;
+      d.setDate(d.getDate() + 1);
+    }
+    return n;
+  };
   const workdays = mo => { const v = m.workdays && m.workdays[mo]; return (v != null && v !== '' && !Number.isNaN(+v)) ? +v : wdDefault(mo); };
 
   // 团队配置理论值
@@ -1002,6 +1025,8 @@ function renderPO() {
   const rows = [...c.poList].sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= c.po.asOf ? v : 0);
+    const startM = r.startDate ? +String(r.startDate).slice(5, 7) : 0;
+    const refund = sum(Object.entries(r.months), ([mm, v]) => (+mm >= c.po.asOf && +mm > startM) ? v : 0);
     return '<tr><td><b>' + esc(r.poNo) + '</b>' + (r.resName ? '<div class="muted">' + esc(r.resName) + '</div>' : '') + '</td>' +
       '<td>' + esc(r.itProject || '—') + '</td>' +
       '<td>' + esc(r.budgetCode || '—') + (c.per[r.budgetCode] && c.per[r.budgetCode].name ? ' <span class="muted">' + esc(c.per[r.budgetCode].name) + '</span>' : '') + '</td>' +
@@ -1010,15 +1035,15 @@ function renderPO() {
       '<td class="num">' + fmtCny(act) + (fc ? ' <span class="muted">+' + fmtCny(fc) + '预测</span>' : '') + '</td>' +
       '<td><span class="st st-' + (r.status === 'CLOSED' ? 'accepted' : 'open') + '">' + r.status + '</span></td>' +
       '<td class="num">' + (r.status === 'OPEN' ? fmtCny(Math.max(r.amount - act, 0)) : '—') + '</td>' +
-      '<td class="num">' + (r.status === 'OPEN' && fc ? fmtCny(fc) : '—') + '</td></tr>';
+      '<td class="num">' + (r.status === 'OPEN' && refund ? fmtCny(refund) : '—') + '</td></tr>';
   }).join('');
   wrap.innerHTML = '<table class="tbl"><thead><tr><th>PO</th><th>花钱项目</th><th>预算来源</th><th>费用起始</th><th class="num">PO金额</th><th class="num">已执行/预测</th><th>状态</th><th class="num">在途冻结</th><th class="num">预计返还</th></tr></thead><tbody>' + rows + '</tbody></table>';
   $('#poFrozenWrap').innerHTML =
     '<table class="cons-table">' +
     '<tr><td>OPEN PO 数</td><td>' + c.openCnt + '</td></tr>' +
     '<tr><td>在途冻结（PO金额 − 已执行）</td><td>' + fmtCny(c.poFrozen) + '</td></tr>' +
-    '<tr><td>预计返还（OPEN PO 未来月预测）</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
-    '</table><div class="muted" style="margin-top:6px">PO 按自然月下达，超出所属月的预测值 = 未花掉，验收（约 1 个月）后返还——记得催验收。</div>';
+    '<tr><td>预计返还（OPEN PO 超出所属月的预测）</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
+    '</table><div class="muted" style="margin-top:6px">PO 按自然月下达：<b>所属月（费用起始月）内的预测</b>=即将执行，不算返还；<b>超出所属月</b>的预测=没花掉，验收（约 1 个月）后返还——记得催验收。</div>';
 
   // 下月 PO 与 OD 建议（原行动建议页内容并入此处）
   $('#poAdviceSub').textContent = c.poAdvice ? ('决策点 ' + c.curM + '月18-19日 → 20日下 ' + c.poAdvice.nextM + '月 PO · ' + c.poAdvice.wd + ' 个工作日') : '';
@@ -1101,7 +1126,8 @@ function renderData() {
     const v = (m.workdays && m.workdays[mo] != null && m.workdays[mo] !== '') ? m.workdays[mo] : '';
     wdHtml += '<label class="field"><span class="field-label">' + mo + '月 · 默认 ' + c.workdays(mo) + '</span><input type="number" min="15" max="31" data-wd="' + mo + '" value="' + v + '" placeholder="' + c.workdays(mo) + '"></label>';
   }
-  $('#workdayForm').innerHTML = wdHtml + '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="wd:save">保存工作日</button><span class="muted">默认按周末双休计算；按国务院放假安排（含调休）微调一次即可。</span></div>';
+  const hY = HOLIDAYS[Y] ? '已内置 ' + Y + ' 年国务院放假安排（含调休）' : Y + ' 年放假安排未收录，默认按周末双休计算';
+  $('#workdayForm').innerHTML = wdHtml + '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；如个别月份仍不准可手动覆盖，留空即用自动值。</span></div>';
 }
 
 /* ================= 弹窗 ================= */
@@ -1179,6 +1205,62 @@ function planPasteGo(mode) {
   }
   touch('plan'); save(); closeModal();
   alert('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 项规划（' + Y + ' 年）。');
+}
+function parseTeamLines(text) {
+  const lines = String(text || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const first = lines[0].split(/[\t,，]+/).map(s => s.trim());
+  const looksHeader = first.some(c => /名称|角色|组名|职位/.test(c)) && first.some(c => /人数|数量|人日/.test(c));
+  let idx = { name: 0, kind: -1, count: 1, rate: 2, project: -1 }, rateHint = null, out = [];
+  if (looksHeader) {
+    first.forEach((c, i) => {
+      if (/名称|角色|组名|职位/.test(c)) idx.name = i;
+      else if (/类型|渠道|分类/.test(c)) idx.kind = i;
+      else if (/人数|数量/.test(c)) idx.count = i;
+      else if (/单价|价格|费用|日费|月费/.test(c)) { idx.rate = i; if (/月/.test(c)) rateHint = 'od'; else if (/日/.test(c)) rateHint = 'po'; }
+      else if (/项目|部门|团队/.test(c)) idx.project = i;
+    });
+    lines.shift();
+  }
+  lines.forEach(l => {
+    const parts = l.split(/[\t,，]+/).map(s => s.trim());
+    const name = parts[idx.name] || '';
+    if (!name) return;
+    const count = parseInt(parts[idx.count], 10) || 0;
+    const rate = parseMoney(parts[idx.rate]) || 0;
+    let kind = rateHint || 'po';
+    if (idx.kind >= 0 && parts[idx.kind]) kind = /od|OD/.test(parts[idx.kind]) ? 'od' : 'po';
+    out.push({ kind, name, headcount: count, rate, project: idx.project >= 0 ? (parts[idx.project] || '') : '' });
+  });
+  return out;
+}
+function teamPasteModal() {
+  openModal('<h3>批量导入团队配置</h3>' +
+    '<div class="muted" style="margin-bottom:8px">在你的团队 Excel 里<b>全选数据区域复制</b>（可含表头：名称/类型/人数/单价/项目，自动识别列）粘贴到下面。<b>替换</b>=以粘贴内容为准重建团队配置（以后人员变更只改 Excel 重新粘贴即可）。</div>' +
+    '<textarea id="pasteTeam" rows="9" placeholder="类型\t名称\t人数\t单价\t项目\npo\t高级开发\t3\t2200\t花钱项目A\nod\tOD工程师\t2\t42000\t花钱项目A\n\n（或直接粘贴 Excel 区域，首行为表头：姓名/角色/人数/日单价/月单价…）"></textarea>' +
+    '<div id="teamPastePreview"></div>' +
+    '<div class="modal-actions"><button class="btn" data-action="modal:close">取消</button>' +
+    '<button class="btn" data-action="team:pasteGo" data-mode="append">追加</button>' +
+    '<button class="btn primary" data-action="team:pasteGo" data-mode="replace">替换全部</button></div>');
+  $('#pasteTeam').addEventListener('input', renderTeamPastePreview);
+  renderTeamPastePreview();
+}
+function renderTeamPastePreview() {
+  const rows = parseTeamLines($('#pasteTeam').value);
+  $('#teamPastePreview').innerHTML = rows.length
+    ? '<div class="muted" style="margin:8px 0 4px">识别 ' + rows.length + ' 组（月度理论：' + fmtCny(sum(rows.filter(r => r.kind === 'od'), r => r.headcount * r.rate)) + '/OD，' + fmtCny(sum(rows.filter(r => r.kind === 'po'), r => r.headcount * r.rate)) + '/PO日额）：</div>' +
+      '<div class="paste-preview"><table>' + rows.map(r => '<tr><td>' + esc(r.name) + '</td><td>' + (r.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + r.headcount + '</td><td>' + fmtCny(r.rate) + '</td><td>' + esc(r.project || '—') + '</td></tr>').join('') + '</table></div>'
+    : '';
+}
+function teamPasteGo(mode) {
+  const rows = parseTeamLines($('#pasteTeam').value);
+  if (!rows.length) { alert('未识别到任何人员组，检查格式或表头'); return; }
+  if (mode === 'replace') {
+    if (state.team.length && !confirm('替换将覆盖现有 ' + state.team.length + ' 组团队配置，确认？')) return;
+    state.team = rows.map(r => ({ id: uid(), ...r }));
+  } else rows.forEach(r => state.team.push({ id: uid(), ...r }));
+  save(); closeModal();
+  alert('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 组团队配置。');
 }
 function teamModal(g) {
   const isNew = !g;
@@ -1373,6 +1455,8 @@ async function handleAction(action, el, e) {
   }
   if (action === 'hc:confirm') { state.meta.lastHcCheck = todayStr(); save(); return; }
   if (action === 'team:add') return teamModal(null);
+  if (action === 'team:paste') return teamPasteModal();
+  if (action === 'team:pasteGo') return teamPasteGo(el.dataset.mode);
   if (action === 'team:edit') return teamModal((state.team || []).find(g => g.id === id));
   if (action === 'team:del') {
     if (confirm('删除该人员组？')) { state.team = state.team.filter(g => g.id !== id); save(); }
