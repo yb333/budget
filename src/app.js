@@ -36,9 +36,22 @@ function normalizeDate(s) {
   const m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (m) return m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
   const m2 = t.match(/^(\d{4})-(\d{1,2})$/);
-  return m2 ? m2[1] + '-' + m2[2].padStart(2, '0') + '-01' : null;
+  if (m2) return m2[1] + '-' + m2[2].padStart(2, '0') + '-01';
+  const m3 = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);   // m/d/yyyy 或 d/m/yyyy
+  if (m3) { let a = +m3[1], b = +m3[2]; if (a > 12 && b <= 12) { const x = a; a = b; b = x; } return m3[3] + '-' + String(a).padStart(2, '0') + '-' + String(b).padStart(2, '0'); }
+  const m4 = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})T/);
+  if (m4) return m4[1] + '-' + m4[2].padStart(2, '0') + '-' + m4[3].padStart(2, '0');
+  return null;
 }
 const MONTH_RE = /^(1[0-2]|[1-9])月(执行|预测)$/;
+function parseMonthHeader(h) {
+  const s = String(h || '').replace(/\s/g, '');
+  const m = s.match(/^(?:\d{4}年)?(1[0-2]|[1-9])月/);   // 必须以（年份+）N月 开头，避免误匹配"截至11月累计执行"
+  if (!m) return null;
+  if (s.indexOf('预测') >= 0) return { month: +m[1], fc: true };
+  if (s.indexOf('执行') >= 0) return { month: +m[1], fc: false };
+  return null;
+}
 
 /* ================= 状态 ================= */
 let state = null;
@@ -46,6 +59,7 @@ let charts = {};
 let SHARE_MODE = false, SHARE_PKG = null;   // 分享只读模式（服务目录存在 data.json 时启用）
 let fileHandle = null;                       // 数据文件句柄（File System Access，会话内记忆）
 let recentHandle = null;                     // 上次用过的数据文件句柄（IndexedDB 持久记忆）
+let dirHandle = null;                        // 数据集文件夹句柄（平台导出文件都放这里）
 
 function idbOpen() {
   return new Promise((res, rej) => {
@@ -71,6 +85,72 @@ async function loadFromHandle(h, silent) {
   state = data; saveSilent(); renderAll();
   if (!silent) alert('已载入 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
   const b = $('#quickLoadBtn'); if (b) b.style.display = 'none';
+}
+async function walkDir(dir, out, depth) {
+  depth = depth || 0;
+  if (depth > 3) return;
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === 'file') { if (/\.(xlsx|xls|csv)$/i.test(name)) out.push(await h.getFile()); }
+    else if (h.kind === 'directory') await walkDir(h, out, depth + 1);
+  }
+}
+function fileSnapDate(f) {
+  try { const d = new Date(f.lastModified || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); } catch (e) { return todayStr(); }
+}
+async function setDatasetDir() {
+  if (!window.showDirectoryPicker) { alert('当前浏览器不支持选择文件夹（请用 Chrome/Edge）'); return; }
+  try { dirHandle = await window.showDirectoryPicker({ mode: 'read' }); }
+  catch (e) { return; }
+  try { await idbSet('dir', dirHandle); } catch (e) { }
+  await scanDataset(true);
+}
+async function scanDataset(manual) {
+  if (!dirHandle) { if (manual) alert('请先设置数据集文件夹'); return false; }
+  let perm = 'granted';
+  try { perm = await dirHandle.queryPermission({ mode: 'read' }); } catch (e) { }
+  if (perm !== 'granted') {
+    try { perm = await dirHandle.requestPermission({ mode: 'read' }); } catch (e) { }
+    if (perm !== 'granted') { if (manual) alert('未授权读取该文件夹'); return false; }
+  }
+  const files = [];
+  try { await walkDir(dirHandle, files); } catch (e) { if (manual) alert('读取文件夹失败：' + e.message); return false; }
+  let known = {};
+  try { known = JSON.parse(localStorage.getItem('budgetDash.dataset') || '{}'); } catch (e) { }
+  const fresh = files.filter(f => { const sig = f.name + '|' + f.size + '|' + f.lastModified; return !known[sig]; });
+  if (!fresh.length) { if (manual) alert('数据集文件夹里没有新文件（识别到的 ' + files.length + ' 个文件都已导入过）'); return false; }
+  files.forEach(f => { known[f.name + '|' + f.size + '|' + f.lastModified] = 1; });
+  localStorage.setItem('budgetDash.dataset', JSON.stringify(known));
+  const summary = await importFilesAuto(fresh);
+  alert('📁 数据集自动导入完成：\n\n' + summary + '\n\n快照日期按文件导出时间记录。');
+  return true;
+}
+async function importFilesAuto(files) {
+  const parts = [];
+  const poAll = []; let asOf = 0;
+  const execByDate = {};
+  for (const f of files) {
+    let rows;
+    try { rows = await parseWorkbookFile(f); } catch (err) { parts.push('❌ ' + f.name + '：解析失败 ' + err.message); continue; }
+    const kind = detectKind(rows);
+    if (kind === 'po') {
+      const r = parsePoRows(rows);
+      asOf = Math.max(asOf, r.asOf);
+      poAll.push(...r.rows);
+      parts.push('📄 ' + f.name + '（PO明细）：' + r.rows.length + ' 行');
+    } else if (kind === 'exec') {
+      const d = fileSnapDate(f);
+      mergeExecRows(execByDate[d] = execByDate[d] || {}, parseExecRows(rows));
+      parts.push('📄 ' + f.name + '（执行表）→ 快照 ' + d);
+    } else parts.push('⚠️ ' + f.name + '：未能识别类型，已跳过');
+  }
+  if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
+  Object.entries(execByDate).forEach(([date, rows]) => {
+    const ex = state.execSnaps.find(s => s.date === date);
+    if (ex) ex.rows = rows; else state.execSnaps.push({ date, rows });
+  });
+  if (Object.keys(execByDate).length) { state.execSnaps.sort((a, b) => a.date < b.date ? -1 : 1); touch('exec'); }
+  save();
+  return parts.join('\n');
 }
 async function openDataFile() {
   if (window.showOpenFilePicker) {
@@ -194,8 +274,8 @@ function parsePoRows(rows) {
     else if (/^项目编码$/.test(h)) col.budgetCode = i;
     else if (/^项目名称$/.test(h)) col.budgetName = i;
     else {
-      const m = String(h).match(MONTH_RE);
-      if (m) { (col.months = col.months || {})[+m[1]] = i; if (m[2] === '预测') (col.fcMonths = col.fcMonths || []).push(+m[1]); }
+      const mh = parseMonthHeader(h);
+      if (mh) { (col.months = col.months || {})[mh.month] = i; if (mh.fc) (col.fcMonths = col.fcMonths || []).push(mh.month); }
     }
   });
   if (col.poNo == null && col.resNo == null) throw new Error('未找到 PO 编号列');
@@ -344,7 +424,31 @@ function renderImportList() {
         : '<select data-fkind="' + fi + '">' +
         [['', '— 请选择类型 —'], ['po', 'PO 明细'], ['exec', '预算执行表']].map(([v, l]) => '<option value="' + v + '"' + (f.kind === v ? ' selected' : '') + '>' + l + '</option>').join('') +
         '</select><span class="muted">' + (f.rows ? f.rows.length + ' 行（含表头）' : '') + '</span>') +
-      '</div></div>').join('');
+      '</div>' +
+      (f.error ? '' : f.kind === 'po' ? poDiagnose(f) : f.kind === 'exec' ? execDiagnose(f) : '') +
+      '</div>').join('');
+}
+function poDiagnose(f) {
+  try {
+    const { asOf, rows } = parsePoRows(f.rows);
+    const rs = rows.slice(0, 5).map(r => {
+      const mSum = sum(Object.entries(r.months), ([, v]) => v);
+      const mTxt = Object.entries(r.months).map(([m, v]) => m + '月' + (v >= 10000 ? (v / 10000).toFixed(1) + 'w' : v)).join(' ');
+      return '<tr><td>' + esc(r.poNo) + '</td><td>' + esc(r.budgetCode) + '</td><td>' + esc(r.startDate || '—') + '</td><td class="num">' + fmtCny(r.amount) + '</td><td>' + r.status + '</td><td class="num">' + fmtCny(mSum) + '</td><td class="muted">' + esc(mTxt || '无月度值') + '</td></tr>';
+    }).join('');
+    return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>PO明细</b>，执行/预测分界月 asOf=<b>' + asOf + '</b>（<' + asOf + '月=实际，≥' + asOf + '月=平台预测），共 ' + rows.length + ' 行</div>' +
+      '<div class="paste-preview"><table><tr><th>PO编码</th><th>预算来源</th><th>费用起始</th><th>金额</th><th>状态</th><th>月度合计</th><th>各月读到的值</th></tr>' + rs + '</table></div>' +
+      '<div class="muted">若与 Excel 对不上，截图此面板发给维护人。</div>';
+  } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
+}
+function execDiagnose(f) {
+  try {
+    const rows = parseExecRows(f.rows);
+    const rs = Object.entries(rows).slice(0, 6).map(([code, o]) =>
+      '<tr><td>' + esc(code) + '</td><td>' + esc(o.name) + '</td><td class="num">' + fmtCny(o.itw.avail) + '</td><td class="num">' + fmtCny(o.itw.exec) + (o.itw.fc ? ' /预测' + fmtCny(o.itw.fc) : '') + '</td><td class="num">' + fmtCny(o.od.avail) + '</td><td class="num">' + fmtCny(o.od.exec) + '</td></tr>').join('');
+    return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>预算执行表</b>，共 ' + Object.keys(rows).length + ' 个预算来源（自有人力列已忽略）</div>' +
+      '<div class="paste-preview"><table><tr><th>编码</th><th>名称</th><th>IT外包可用</th><th>IT外包执行</th><th>OD可用</th><th>OD执行</th></tr>' + rs + '</table></div>';
+  } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
 }
 function importAll() {
   if (!importCtx || !importCtx.files.length) { alert('请先添加文件'); return; }
@@ -906,11 +1010,14 @@ function renderData() {
     '<button class="btn primary" data-action="import:open">📥 导入平台数据（4文件）</button>' +
     '<button class="btn primary" data-action="data:saveFile">💾 保存到数据文件</button>' +
     '<button class="btn" data-action="data:openFile">📂 打开/恢复数据文件</button>' +
+    '<button class="btn" data-action="dataset:scan">📁 扫描数据集</button>' +
+    '<button class="btn" data-action="dataset:set">⚙️ 设置数据集文件夹</button>' +
     '<button class="btn" data-action="data:publish">📤 发布分享</button>' +
     '<button class="btn" data-action="data:export">📦 分层备份</button>' +
     '<input type="file" id="importFile" accept=".json,application/json" style="display:none">' +
     '<button class="btn" data-action="data:demo">示例数据</button>' +
     '<button class="btn danger" data-action="data:clear">清空</button></div>' +
+    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，每次从平台导出文件丢进该文件夹，打开看板<b>自动扫描导入</b>（快照日期=文件导出时间，重复文件自动跳过），无需手动拖拽。</div>' +
     '<div class="muted" style="margin-top:10px"><b>git 同步工作流</b>：主数据建议存 <b>data/budget.json</b>（保存按钮直接写回；打开/恢复可载入）——数据随仓库走，换机器 pull 后「📂打开」即接管。日常也自动存本浏览器 localStorage（无数据库）。分层备份：全量/仅配置/仅数据，v2 旧包自动升级。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。</div>' +
     '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
 
@@ -1230,6 +1337,8 @@ async function handleAction(action, el, e) {
   }
   if (action === 'data:saveFile') return saveToDataFile();
   if (action === 'data:openFile') return openDataFile();
+  if (action === 'dataset:set') return setDatasetDir();
+  if (action === 'dataset:scan') return scanDataset(true);
   if (action === 'data:openRecent') {
     if (!recentHandle) return;
     try {
@@ -1434,6 +1543,16 @@ function renderAll() {
   load();
   renderAll();
   if (!SHARE_MODE) {
+    try {
+      const dh = await idbGet('dir');
+      if (dh) {
+        dirHandle = dh;
+        const b2 = $('#datasetScanBtn'); if (b2) b2.style.display = '';
+        let dp = 'granted';
+        try { dp = await dh.queryPermission({ mode: 'read' }); } catch (e) { }
+        if (dp === 'granted') { await scanDataset(false); }
+      }
+    } catch (e) { }
     try {
       const h = await idbGet('fh');
       if (h && h.queryPermission) {
