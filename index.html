@@ -434,12 +434,13 @@ async function importFilesAuto(files) {
       parts.push('📄 ' + f.name + '（执行表）→ 快照 ' + d);
     } else if (kind === 'team') {
       const sheets = await parseAllSheets(f);
-      let persons = parseTeamSheets(sheets).persons;
+      let persons = parseTeamSheets(sheets).groups;
       if (!persons.length) persons = parseTeamTable(rows);
       if (!persons.length) throw new Error('未识别到人员（需要 PO/OD 页签+姓名/单价列，或 类型/人数/单价 列）');
       state.team = persons.map(g => ({ id: uid(), ...g }));
       touch('team');
-      parts.push('👥 ' + f.name + '（团队配置）：' + persons.length + ' 人已更新（以数据集为准）');
+      const pN = sum(persons, g => g.headcount || 0);
+      parts.push('👥 ' + f.name + '（团队配置）：' + pN + ' 人 / ' + persons.length + ' 组已更新（以数据集为准）');
     } else parts.push('⚠️ ' + f.name + '：未能识别类型，已跳过');
   }
   if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
@@ -591,7 +592,8 @@ async function parseAllSheets(file) {
   });
   return out;
 }
-// 页签式团队表：页签名含 PO/OD 区分渠道，每行一人，只取 姓名+单价 两列，其余列忽略
+// 页签式团队表：页签名含 PO/OD 区分渠道，每行一人，只取 姓名+单价(+可选职级) 列，其余列忽略
+// 展示时同单价自动归组（有职级列用职级做组名，否则按单价命名），明细留在用户 Excel 里
 function parseTeamSheets(sheets) {
   const persons = [], notes = [];
   sheets.forEach(sh => {
@@ -600,16 +602,27 @@ function parseTeamSheets(sheets) {
     const header = sh.rows[0] || [];
     const nameCol = header.findIndex(h => /姓名|名字|人员|名称|角色/.test(h));
     const priceCol = header.findIndex(h => /单价|价格|日费|月费|费用|成本/.test(h));
+    const levelCol = header.findIndex(h => /职级|级别|等级/.test(h));
     if (nameCol < 0 || priceCol < 0) { if (sn) notes.push('页签「' + sn + '」未找到姓名/单价列，跳过'); return; }
     if (!kind) { const ph = String(header[priceCol] || ''); kind = /月/.test(ph) ? 'od' : /日/.test(ph) ? 'po' : null; }
     if (!kind) { notes.push('页签「' + sn + '」无法判断 PO/OD（页签名或单价列名需含 PO/OD/日/月）'); return; }
     sh.rows.slice(1).forEach(r => {
       const nm = String(r[nameCol] || '').trim();
       const price = parseMoney(r[priceCol]);
-      if (nm && price != null && price > 0) persons.push({ kind, name: nm, headcount: 1, rate: price, project: sn });
+      if (nm && price != null && price > 0) persons.push({ kind, rate: price, level: levelCol >= 0 ? String(r[levelCol] || '').trim() : '' });
     });
   });
-  return { persons, notes };
+  const map = new Map();
+  persons.forEach(pr => {
+    const key = pr.kind + '|' + pr.rate + '|' + pr.level;
+    if (!map.has(key)) map.set(key, { kind: pr.kind, rate: pr.rate, level: pr.level, headcount: 0 });
+    map.get(key).headcount++;
+  });
+  const groups = Array.from(map.values()).map(g => ({
+    kind: g.kind, headcount: g.headcount, rate: g.rate, project: '',
+    name: g.level || ((g.kind === 'po' ? '日单价' : '月单价') + fmtCny(g.rate))
+  }));
+  return { persons, groups, notes };
 }
 
 /* ---- PO 明细解析（固定表头 + 动态月列） ---- */
@@ -815,10 +828,10 @@ function teamDiagnose(f) {
   try {
     if (f.sheets && f.sheets.length) {
       const r2 = parseTeamSheets(f.sheets);
-      const poN = r2.persons.filter(x => x.kind === 'po').length, odN = r2.persons.filter(x => x.kind === 'od').length;
-      const rs = r2.persons.slice(0, 8).map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td class="num">' + fmtCny(g.rate) + '</td><td>' + esc(g.project) + '</td></tr>').join('');
-      return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>团队配置（页签式）</b>，PO ' + poN + ' 人 / OD ' + odN + ' 人' + (r2.notes.length ? '；' + esc(r2.notes.join('；')) : '') + '（其余列已忽略；理论值=各人单价求和）</div>' +
-        '<div class="paste-preview"><table><tr><th>姓名</th><th>类型</th><th>单价</th><th>页签</th></tr>' + rs + '</table></div>';
+      const poN = sum(r2.groups.filter(x => x.kind === 'po'), g => g.headcount), odN = sum(r2.groups.filter(x => x.kind === 'od'), g => g.headcount);
+      const rs = r2.groups.map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + g.headcount + '</td><td class="num">' + fmtCny(g.rate) + '</td></tr>').join('');
+      return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>团队配置（页签式）</b>，PO ' + poN + ' 人 / OD ' + odN + ' 人，同单价自动归组为 ' + r2.groups.length + ' 组' + (r2.notes.length ? '；' + esc(r2.notes.join('；')) : '') + '（明细姓名不存看板，留在你的 Excel）</div>' +
+        '<div class="paste-preview"><table><tr><th>组名</th><th>类型</th><th>人数</th><th>单价</th></tr>' + rs + '</table></div>';
     }
     const groups = parseTeamTable(f.rows);
     const rs = groups.slice(0, 6).map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + g.headcount + '</td><td class="num">' + fmtCny(g.rate) + '</td><td>' + esc(g.project || '—') + '</td></tr>').join('');
@@ -855,10 +868,11 @@ async function importAll() {
       parts.push('📄 ' + f.name + '（执行表）：已合并');
     } else if (f.kind === 'team') {
       let persons = null;
-      if (f.sheets) { const r2 = parseTeamSheets(f.sheets); if (r2.persons.length) persons = r2.persons; }
+      if (f.sheets) { const r2 = parseTeamSheets(f.sheets); if (r2.groups.length) persons = r2.groups; }
       if (!persons) persons = parseTeamTable(f.rows);
       teamGroups = persons;
-      parts.push('👥 ' + f.name + '（团队配置）：' + persons.length + ' 人');
+      const pN = sum(persons, g => g.headcount || 0);
+      parts.push('👥 ' + f.name + '（团队配置）：' + pN + ' 人 / ' + persons.length + ' 组');
     }
   }
   if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); touch('team'); }
