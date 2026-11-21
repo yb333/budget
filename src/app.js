@@ -182,11 +182,13 @@ async function importFilesAuto(files) {
       mergeExecRows(execByDate[d] = execByDate[d] || {}, parseExecRows(rows));
       parts.push('📄 ' + f.name + '（执行表）→ 快照 ' + d);
     } else if (kind === 'team') {
-      const groups = parseTeamTable(rows);
-      if (!groups.length) throw new Error('未识别到人员行');
-      state.team = groups.map(g => ({ id: uid(), ...g }));
+      const sheets = await parseAllSheets(f);
+      let persons = parseTeamSheets(sheets).persons;
+      if (!persons.length) persons = parseTeamTable(rows);
+      if (!persons.length) throw new Error('未识别到人员（需要 PO/OD 页签+姓名/单价列，或 类型/人数/单价 列）');
+      state.team = persons.map(g => ({ id: uid(), ...g }));
       touch('team');
-      parts.push('👥 ' + f.name + '（团队配置）：' + groups.length + ' 组已更新（以数据集为准）');
+      parts.push('👥 ' + f.name + '（团队配置）：' + persons.length + ' 人已更新（以数据集为准）');
     } else parts.push('⚠️ ' + f.name + '：未能识别类型，已跳过');
   }
   if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
@@ -317,8 +319,46 @@ function detectKind(rows) {
   const h = (rows[0] || []).join(' ');
   if (/预算来源编码/.test(h)) return 'exec';
   if (/PO编码|资源申请编号/.test(h)) return 'po';
-  if (/人数|数量/.test(h) && /单价|价格|费用/.test(h)) return 'team';
+  if ((/姓名|名字|人员/.test(h) && /单价|价格|费用/.test(h)) || (/人数|数量/.test(h) && /单价|价格|费用/.test(h))) return 'team';
   return '';
+}
+async function parseAllSheets(file) {
+  if (/\.csv$/i.test(file.name)) return [{ name: '', rows: csvToRows(await file.text()) }];
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  const out = [];
+  wb.SheetNames.forEach(sn => {
+    const ws = wb.Sheets[sn];
+    if (!ws) return;
+    try {   // dimension 声明不完整修复（同 parseWorkbookFile）
+      const rg = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      let maxR = 0, maxC = 0;
+      Object.keys(ws).forEach(k => { if (k[0] !== '!') { const a = XLSX.utils.decode_cell(k); if (a.r > maxR) maxR = a.r; if (a.c > maxC) maxC = a.c; } });
+      if (maxR > rg.e.r || maxC > rg.e.c) { rg.e.r = Math.max(rg.e.r, maxR); rg.e.c = Math.max(rg.e.c, maxC); ws['!ref'] = XLSX.utils.encode_range(rg); }
+    } catch (e) { }
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }).map(r => r.map(c => String(c == null ? '' : c).trim())).filter(r => r.some(c => c !== ''));
+    out.push({ name: sn, rows });
+  });
+  return out;
+}
+// 页签式团队表：页签名含 PO/OD 区分渠道，每行一人，只取 姓名+单价 两列，其余列忽略
+function parseTeamSheets(sheets) {
+  const persons = [], notes = [];
+  sheets.forEach(sh => {
+    const sn = String(sh.name || '');
+    let kind = /od/i.test(sn) ? 'od' : (/po/i.test(sn) ? 'po' : null);
+    const header = sh.rows[0] || [];
+    const nameCol = header.findIndex(h => /姓名|名字|人员|名称|角色/.test(h));
+    const priceCol = header.findIndex(h => /单价|价格|日费|月费|费用|成本/.test(h));
+    if (nameCol < 0 || priceCol < 0) { if (sn) notes.push('页签「' + sn + '」未找到姓名/单价列，跳过'); return; }
+    if (!kind) { const ph = String(header[priceCol] || ''); kind = /月/.test(ph) ? 'od' : /日/.test(ph) ? 'po' : null; }
+    if (!kind) { notes.push('页签「' + sn + '」无法判断 PO/OD（页签名或单价列名需含 PO/OD/日/月）'); return; }
+    sh.rows.slice(1).forEach(r => {
+      const nm = String(r[nameCol] || '').trim();
+      const price = parseMoney(r[priceCol]);
+      if (nm && price != null && price > 0) persons.push({ kind, name: nm, headcount: 1, rate: price, project: sn });
+    });
+  });
+  return { persons, notes };
 }
 
 /* ---- PO 明细解析（固定表头 + 动态月列） ---- */
@@ -480,7 +520,9 @@ async function handleFiles(list) {
     try {
       const rows = await parseWorkbookFile(f);
       if (!rows.length) { importCtx.files.push({ name: f.name, error: '空文件' }); continue; }
-      importCtx.files.push({ name: f.name, kind: detectKind(rows), rows });
+      const rec = { name: f.name, kind: detectKind(rows), rows, file: f };
+      if (rec.kind === 'team') { try { rec.sheets = await parseAllSheets(f); } catch (e) { } }
+      importCtx.files.push(rec);
     } catch (err) {
       importCtx.files.push({ name: f.name, error: '解析失败：' + err.message + (/\.xls$/i.test(f.name) ? '（.xls 请先另存为 .xlsx）' : '') });
     }
@@ -520,6 +562,13 @@ function poDiagnose(f) {
 }
 function teamDiagnose(f) {
   try {
+    if (f.sheets && f.sheets.length) {
+      const r2 = parseTeamSheets(f.sheets);
+      const poN = r2.persons.filter(x => x.kind === 'po').length, odN = r2.persons.filter(x => x.kind === 'od').length;
+      const rs = r2.persons.slice(0, 8).map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td class="num">' + fmtCny(g.rate) + '</td><td>' + esc(g.project) + '</td></tr>').join('');
+      return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>团队配置（页签式）</b>，PO ' + poN + ' 人 / OD ' + odN + ' 人' + (r2.notes.length ? '；' + esc(r2.notes.join('；')) : '') + '（其余列已忽略；理论值=各人单价求和）</div>' +
+        '<div class="paste-preview"><table><tr><th>姓名</th><th>类型</th><th>单价</th><th>页签</th></tr>' + rs + '</table></div>';
+    }
     const groups = parseTeamTable(f.rows);
     const rs = groups.slice(0, 6).map(g => '<tr><td>' + esc(g.name) + '</td><td>' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + g.headcount + '</td><td class="num">' + fmtCny(g.rate) + '</td><td>' + esc(g.project || '—') + '</td></tr>').join('');
     return '<div class="muted" style="margin:6px 0 3px">🔍 解析诊断：识别为 <b>团队配置</b>，共 ' + groups.length + ' 组（导入后以数据集为准替换现有团队配置）</div>' +
@@ -535,14 +584,14 @@ function execDiagnose(f) {
       '<div class="paste-preview"><table><tr><th>编码</th><th>名称</th><th>IT外包可用</th><th>IT外包执行</th><th>OD可用</th><th>OD执行</th></tr>' + rs + '</table></div>';
   } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
 }
-function importAll() {
+async function importAll() {
   if (!importCtx || !importCtx.files.length) { alert('请先添加文件'); return; }
   const parts = [];
   const poAll = []; let asOf = 0;
   const execMerged = {}; let execCnt = 0;
   const snapDate = ($('#snapDate') && $('#snapDate').value) || importCtx.snapDate || todayStr();
   let teamGroups = null;
-  importCtx.files.forEach(f => {
+  for (const f of importCtx.files) {
     if (f.error || !f.kind) return;
     if (f.kind === 'po') {
       const { asOf: a, rows } = parsePoRows(f.rows);
@@ -554,10 +603,13 @@ function importAll() {
       execCnt++;
       parts.push('📄 ' + f.name + '（执行表）：已合并');
     } else if (f.kind === 'team') {
-      teamGroups = parseTeamTable(f.rows);
-      parts.push('👥 ' + f.name + '（团队配置）：' + (teamGroups ? teamGroups.length : 0) + ' 组');
+      let persons = null;
+      if (f.sheets) { const r2 = parseTeamSheets(f.sheets); if (r2.persons.length) persons = r2.persons; }
+      if (!persons) persons = parseTeamTable(f.rows);
+      teamGroups = persons;
+      parts.push('👥 ' + f.name + '（团队配置）：' + persons.length + ' 人');
     }
-  });
+  }
   if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); touch('team'); }
   if (poAll.length) {
     state.poDataByYear = state.poDataByYear || {};
@@ -1158,10 +1210,11 @@ function renderData() {
   const to = sum(team.filter(g => g.kind === 'od'), g => (g.headcount || 0) * (g.rate || 0));
   let calib = '';
   if (team.length) {
+    const poN = sum(team.filter(g => g.kind === 'po'), g => g.headcount || 0), odN = sum(team.filter(g => g.kind === 'od'), g => g.headcount || 0);
     calib = '<table class="cons-table" style="margin-top:8px">' +
-      '<tr><td>PO 理论日额 / 本月理论（' + c.workdays(Math.max(c.curM, 1)) + ' 工作日 × 出勤 ' + (m.attendFactor != null ? m.attendFactor : 1) + '）</td><td>' + fmtCny(tp) + ' / ' + fmtCny(c.team.theoryPo(Math.max(c.curM, 1))) + '</td></tr>' +
+      '<tr><td>PO 外包 ' + poN + ' 人 · 理论日额 / 本月理论（' + c.workdays(Math.max(c.curM, 1)) + ' 工作日 × 出勤 ' + (m.attendFactor != null ? m.attendFactor : 1) + '）</td><td>' + fmtCny(tp) + ' / ' + fmtCny(c.team.theoryPo(Math.max(c.curM, 1))) + '</td></tr>' +
+      '<tr><td>OD 外包 ' + odN + ' 人 · 理论月额</td><td>' + fmtCny(to) + (c.odAvg > 0 && c.team.calibOd != null ? '（vs 近3月实际 ' + fmtCny(c.odAvg) + '，偏差 ' + fmtPct(c.team.calibOd) + '）' : '') + '</td></tr>' +
       (c.poAvg > 0 ? '<tr><td>vs 近3月 PO 实际月均</td><td>' + fmtCny(c.poAvg) + (c.team.calibPo != null ? '（偏差 ' + fmtPct(c.team.calibPo) + '）' : '') + '</td></tr>' : '') +
-      '<tr><td>OD 理论月额</td><td>' + fmtCny(to) + (c.odAvg > 0 && c.team.calibOd != null ? '（vs 近3月实际 ' + fmtCny(c.odAvg) + '，偏差 ' + fmtPct(c.team.calibOd) + '）' : '') + '</td></tr>' +
       '</table>' + ((Math.abs(c.team.calibPo || 0) > 0.1 || Math.abs(c.team.calibOd || 0) > 0.1) ? '<div class="cons-diff info">ℹ️ 理论与实际偏差超 10%：检查人数、单价或出勤系数。</div>' : '<div class="cons-diff ok">✓ 团队配置与历史实际吻合</div>');
   }
   $('#teamTableWrap').innerHTML = (!team.length ? '<div class="empty">还没有团队配置——不配也能用（预测退回历史外推），配上后扩编/缩编的下月预测立即准确。</div>' :
