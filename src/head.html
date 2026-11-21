@@ -13,7 +13,8 @@
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;}
-.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 24px;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20;flex-wrap:wrap}
+.sticky-head{position:sticky;top:0;z-index:30}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 24px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .topbar h1{font-size:18px;margin:0;display:flex;align-items:center;gap:10px}
 .year-badge{background:var(--blue-bg);color:var(--blue);border-radius:8px;padding:2px 10px;font-size:13px;font-weight:600}
 .banner{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:5px 12px;border-radius:8px;font-size:13px;max-width:100%}
@@ -117,6 +118,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
 </style>
 </head>
 <body>
+<div class="sticky-head">
 <header class="topbar">
   <div><h1>📊 年度预算执行看板
     <button class="btn small" data-action="year:prev" title="上一年度">◀</button>
@@ -136,6 +138,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
   <button data-tab="po">PO 台账</button>
   <button data-tab="data">数据管理</button>
 </nav>
+</div>
 <main>
   <section id="tab-now" class="tab-panel active">
     <div id="onboard"></div>
