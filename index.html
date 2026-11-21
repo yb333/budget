@@ -349,6 +349,29 @@ let state = null;
 let charts = {};
 let SHARE_MODE = false, SHARE_PKG = null;   // 分享只读模式（服务目录存在 data.json 时启用）
 let fileHandle = null;                       // 数据文件句柄（File System Access，会话内记忆）
+let fileConnected = false;                   // budget.json 写穿连接状态（断连时数据仅存浏览器缓存，重连即同步）
+let fileWriteTimer = null, fileWriting = false;
+async function writeThroughNow() {           // 立即把当前状态写入 budget.json（原子写：临时文件+提交）
+  if (SHARE_MODE || !fileHandle) return true;
+  if (fileWriting) return false;
+  fileWriting = true;
+  try {
+    const perm = await fileHandle.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') { fileConnected = false; renderBanner(); return false; }
+    const w = await fileHandle.createWritable();
+    await w.write(JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2));
+    await w.close();
+    try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { }
+    if (!fileConnected) { fileConnected = true; renderBanner(); }
+    return true;
+  } catch (e) { fileConnected = false; renderBanner(); return false; }
+  finally { fileWriting = false; }
+}
+function scheduleFileWrite() {               // 防抖 800ms 写穿；断连时静默（数据仍在 localStorage 缓存，重连后下一次写入同步）
+  if (SHARE_MODE || !fileHandle) return;
+  clearTimeout(fileWriteTimer);
+  fileWriteTimer = setTimeout(writeThroughNow, 800);
+}
 let recentHandle = null;                     // 上次用过的数据文件句柄（IndexedDB 持久记忆）
 let dirHandle = null;                        // 数据集文件夹句柄（平台导出文件都放这里）
 
@@ -371,7 +394,7 @@ async function loadFromHandle(h, silent) {
   if (data && data.type === 'budget-dash-data') throw new Error('这是数据包，请用「恢复」导入');
   if (data && data.schemaVersion === 2) data = migrate(data);
   if (!data || data.schemaVersion !== 3 || !Array.isArray(data.plans)) throw new Error('不是看板数据文件');
-  fileHandle = h; recentHandle = h;
+  fileHandle = h; recentHandle = h; fileConnected = true;
   try { await idbSet('fh', h); } catch (e) { }
   state = data; saveSilent(); renderAll();
   if (!silent) alert('已载入 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
@@ -552,7 +575,7 @@ function load() {
     }
   } catch (e) { state = defaultState(); }
 }
-function saveSilent() { localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+function saveSilent() { localStorage.setItem(LS_KEY, JSON.stringify(state)); scheduleFileWrite(); }
 function save() { if (SHARE_MODE) { renderAll(); return; } localStorage.setItem(LS_KEY, JSON.stringify(state)); try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { } renderAll(); }
 function touch(key) { (state.updatedAt = state.updatedAt || {})[key] = todayStr(); }
 
@@ -1198,8 +1221,16 @@ function renderBanner() {
   });
   const hasData = state.execSnaps.length || state.poData;
   if (!hasData && !state.plans.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 尚未录入任何数据：先在「数据管理」录规划，再导入平台 4 文件'; return; }
-  if (chips.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join(''); }
-  else { el.className = 'banner ok'; el.innerHTML = '✓ 各数据源 ' + freq + ' 天内均已更新'; }
+  let fileChip = '';
+  if (fileHandle && !fileConnected) fileChip = '<span class="chip" style="border-color:var(--red);color:var(--red)">💾 数据文件未连接</span>';
+  else if (fileHandle && fileConnected) fileChip = '<span class="chip">💾 budget.json 已连接</span>';
+  if (fileHandle && !fileConnected) {
+    el.className = 'banner warn';
+    el.innerHTML = '⚠️ <b>数据文件未连接</b>：数据暂存浏览器缓存（不丢），点上方「📂 载入数据文件」重连一次即恢复自动同步。' + (chips.length ? '<br>数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') : '');
+    return;
+  }
+  if (chips.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') + fileChip; }
+  else { el.className = 'banner ok'; el.innerHTML = '✓ 各数据源 ' + freq + ' 天内均已更新' + fileChip; }
   $('#yearBadge').textContent = state.meta.year + ' 年度';
 }
 
@@ -1516,7 +1547,7 @@ function renderData() {
     '<button class="btn" data-action="data:demo">示例数据</button>' +
     '<button class="btn danger" data-action="data:clear">清空</button></div>' +
     '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，平台导出文件（PO明细/执行表）和<b>团队 Excel</b> 都丢进该文件夹，打开看板<b>自动扫描导入</b>——团队 Excel 改完存盘，下次打开自动生效，无需任何操作（快照日期=文件导出时间，重复文件自动跳过）。</div>' +
-    '<div class="muted" style="margin-top:10px"><b>git 同步工作流</b>：主数据建议存 <b>data/budget.json</b>（保存按钮直接写回；打开/恢复可载入）——数据随仓库走，换机器 pull 后「📂打开」即接管。日常也自动存本浏览器 localStorage（无数据库）。分层备份：全量/仅配置/仅数据，v2 旧包自动升级。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。</div>' +
+    '<div class="muted" style="margin-top:10px"><b>持久化架构</b>：budget.json = 唯一真源（<b>选一次文件后每次变更自动写入</b>，随 git 同步，清浏览器不丢）；浏览器 localStorage 只是缓存（断网/断连时兜底，重连自动同步）。分层备份用于手动归档/迁移。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。' + (fileHandle ? (fileConnected ? ' ✅ 数据文件已连接' : ' ⚠️ 数据文件未连接（点顶部📂重连）') : ' ⏸ 尚未设置数据文件（点上方💾选择 data/budget.json）') + '</div>' +
     '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
 
   // 规划金额疑似过小（旧版按万美金录入被迁移误除以1万）→ 修复入口
@@ -1749,31 +1780,29 @@ function doPublish() {
   alert('已生成 data.json。请把它放到你的服务目录（与 index.html 同目录），同事们刷新页面即可看到本次发布的数据。');
 }
 async function saveToDataFile() {
-  const data = JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2);
-  if (window.showSaveFilePicker) {
-    try {
-      if (!fileHandle) {
-        fileHandle = await window.showSaveFilePicker({
-          suggestedName: 'budget.json',
-          types: [{ description: '预算看板数据（JSON）', accept: { 'application/json': ['.json'] } }]
-        });
-      }
-      const w = await fileHandle.createWritable();
-      await w.write(data);
-      await w.close();
+  if (!window.showSaveFilePicker) {
+    const blob = new Blob([JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'budget.json'; a.click(); URL.revokeObjectURL(a.href);
+    alert('当前浏览器不支持直接写文件，已下载 budget.json——请手动覆盖到仓库 data/ 目录。');
+    return;
+  }
+  try {
+    if (!fileHandle) {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: 'budget.json',
+        types: [{ description: '预算看板数据（JSON）', accept: { 'application/json': ['.json'] } }]
+      });
       try { await idbSet('fh', fileHandle); } catch (e) { }
       recentHandle = fileHandle;
-      alert('已保存到 ' + (fileHandle.name || 'budget.json') + '。\n\n建议保存到仓库 data/budget.json，随 git 同步；本会话内再次保存无需重选位置。');
-      return;
-    } catch (e) {
-      if (e && e.name === 'AbortError') return;   // 用户取消
-      fileHandle = null;                          // 句柄失效，走下载兜底
     }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+    return;
   }
-  const blob = new Blob([data], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = 'budget.json'; a.click(); URL.revokeObjectURL(a.href);
-  alert('当前浏览器不支持直接写文件，已下载 budget.json——请手动覆盖到仓库 data/ 目录。');
+  const ok = await writeThroughNow();
+  if (ok) alert('已写入 ' + (fileHandle.name || 'budget.json') + '。\n\n✅ 此后<b>每次变更自动同步写入</b>该文件（无需再点本按钮），数据随 git 走，清浏览器也不丢。'.replace(/<[^>]+>/g, ''));
+  else alert('写入失败（权限可能已过期）：数据仍在浏览器缓存中，点顶部「📂 载入数据文件」重连后再试。');
 }
 function exportModal() {
   openModal('<h3>分层备份</h3>' +
@@ -1947,7 +1976,7 @@ async function handleAction(action, el, e) {
     if (!recentHandle) return;
     try {
       const perm = await recentHandle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { await loadFromHandle(recentHandle); } else alert('未授权访问文件');
+      if (perm === 'granted') { await loadFromHandle(recentHandle); fileConnected = true; renderBanner(); } else alert('未授权访问文件');
     } catch (e) { alert('载入失败：' + e.message); }
     return;
   }
@@ -2200,6 +2229,7 @@ function renderAll() {
           if (!localRaw || f.lastModified > savedAt) {
             try { await loadFromHandle(h, true); } catch (e) { }
           }
+          fileConnected = true;
         } else {
           const b = $('#quickLoadBtn'); if (b) b.style.display = '';
         }
