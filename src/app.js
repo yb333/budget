@@ -249,10 +249,12 @@ function migrate(old) {
   return null;
 }
 function load() {
+  const normalizePlans = st => { (st.plans || []).forEach(p => { if (p.amountW == null) { p.amountW = wusdOf(p); delete p.amountUsd; } }); };
   if (SHARE_MODE) {           // 分享模式：只读快照，不读写本机存储
     state = SHARE_PKG.state;
     if (state && state.schemaVersion === 2) { const m = migrate(state); if (m) state = m; }
     if (!state || state.schemaVersion !== 3) state = defaultState();
+    normalizePlans(state);
     return;
   }
   try {
@@ -261,6 +263,7 @@ function load() {
       let obj = JSON.parse(raw);
       while (obj && obj.schemaVersion < 3) { const m = migrate(obj); if (!m) { obj = null; break; } obj = m; }
       state = obj && obj.schemaVersion === 3 ? obj : defaultState();
+      if (state && state.plans) normalizePlans(state);
     } else {
       // v2 旧键自动升级接管
       const old2 = localStorage.getItem('budgetDash.v2');
@@ -642,6 +645,14 @@ async function importAll() {
 
 /* ================= 计算引擎 ================= */
 const curYear = () => state.meta.year;
+// 规划金额单位 WUSD（万美金，保留小数）：amountW 为准；旧数据 amountUsd（美元整数）自动换算
+const wusdOf = p => (p && p.amountW != null ? +p.amountW : ((p && p.amountUsd) || 0) / 10000);
+function fmtWusd(v) { const n = +v; if (!Number.isFinite(n)) return '—'; let t = n.toFixed(2); if (t.indexOf('.') >= 0) t = t.replace(/0+$/, '').replace(/\.$/, ''); return t; }
+function parseWusd(s) {  // 输入容错：'5.5'→5.5；'5.5万'→5.5；'55000'或≥1000 视为美元自动÷1万
+  const v = parseMoney(s);
+  if (v == null) return null;
+  return v >= 1000 ? v / 10000 : v;
+}
 const yearParams = y => Object.assign({}, defaultYearParams(), (state.years || {})[y] || {});
 const plansOf = y => (state.plans || []).filter(p => p.year === y);
 const poOf = y => (state.poDataByYear || {})[y] || null;
@@ -663,13 +674,13 @@ function calc() {
   const unmatched = codes.filter(c => !planByCode[c]);
 
   // 汇总
-  const planCnyTotal = sum(plansY, p => (p.amountUsd || 0) * fx);
+  const planCnyTotal = sum(plansY, p => wusdOf(p) * 10000 * fx);
   let itwExec = 0, odExec = 0, availTotal = 0, itwFc = 0, remainTotal = 0;
   const per = {};
   codes.forEach(c => {
     const r = snap.rows[c];
     const p = planByCode[c] || null;
-    const planCny = p ? (p.amountUsd || 0) * fx : null;
+    const planCny = p ? wusdOf(p) * 10000 * fx : null;
     const ie = r.itw.exec || 0, oe = r.od.exec || 0;
     const av = (r.itw.avail || 0) + (r.od.avail || 0);
     const rm = (r.itw.remain || 0) + (r.od.remain || 0);
@@ -830,10 +841,10 @@ function calc() {
   const grantWarn = [];
   plansY.forEach(p => {
     if (!p.code || !per[p.code]) {
-      if ((p.amountUsd || 0) > 0 && curM >= 3 && (!p.code || !snap || !snap.rows[p.code])) grantWarn.push({ name: p.name, msg: curM >= 3 ? '平台未见授予' : '' });
+      if (wusdOf(p) > 0 && curM >= 3 && (!p.code || !snap || !snap.rows[p.code])) grantWarn.push({ name: p.name, msg: curM >= 3 ? '平台未见授予' : '' });
       return;
     }
-    const s = per[p.code], pc = (p.amountUsd || 0) * fx;
+    const s = per[p.code], pc = wusdOf(p) * 10000 * fx;
     if (pc > 0 && s.avail / pc < timeProg - 0.1) grantWarn.push({ name: p.name, msg: '授予 ' + fmtPct(s.avail / pc) + '（时间进度 ' + fmtPct(timeProg) + '）' });
   });
 
@@ -1122,7 +1133,7 @@ function renderBudget() {
     rows.push('<tr>' +
       '<td><b>' + esc(s.name) + '</b> <span class="muted">[' + esc(code) + ']</span></td>' +
       '<td>' + (s.plan ? esc(s.plan.name) : '<span class="btn-row"><button class="btn small" data-action="link:manage">🔗 关联规划</button> <button class="btn small danger" data-action="excl:add" data-id="' + esc(code) + '" title="不在本年规划/挂靠项：剔除后其执行与 PO 均不参与计算">🚫 剔除</button></span>') + '</td>' +
-      '<td class="num">' + (s.plan ? fmtUsd(s.plan.amountUsd) : '—') + '</td>' +
+      '<td class="num">' + (s.plan ? fmtWusd(wusdOf(s.plan)) : '—') + '</td>' +
       '<td class="num">' + fmtCny(s.planCny) + '</td>' +
       '<td class="num">' + fmtCny(s.avail) + '</td>' +
       '<td class="num">' + fmtCny(s.itwExec) + '</td>' +
@@ -1135,7 +1146,7 @@ function renderBudget() {
     if (p.code && seen.has(p.code)) return;
     rows.push('<tr style="opacity:.75"><td><span class="muted">平台未出现</span></td>' +
       '<td><b>' + esc(p.name) + '</b>' + (p.code ? ' <span class="muted">[' + esc(p.code) + ']</span>' : ' <span class="st st-open">待授予</span>') + '</td>' +
-      '<td class="num">' + fmtUsd(p.amountUsd) + '</td><td class="num">' + fmtCny((p.amountUsd || 0) * c.fx) + '</td>' +
+      '<td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * c.fx) + '</td>' +
       '<td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>' +
       '<td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td>—</td></tr>');
   });
@@ -1143,9 +1154,9 @@ function renderBudget() {
     ? '<div class="cons-diff info" style="margin-top:8px">🚫 已剔除 ' + c.excluded.length + ' 项（其执行与 PO 均不参与计算）：' + c.excluded.map(x => esc(x) + (c.snap && c.snap.rows[x] ? ' ' + esc(c.snap.rows[x].name) : '')).join('、') + '　<button class="btn small" data-action="excl:manage">恢复</button></div>'
     : '';
   wrap.innerHTML = '<table class="tbl"><thead><tr>' +
-    '<th>平台名称</th><th>规划名称</th><th class="num">规划USD</th><th class="num">规划¥</th><th class="num">可用</th><th class="num">IT外包执行</th><th class="num">OD执行</th><th class="num">剩余</th><th class="num">目标</th><th style="min-width:170px">执行率</th>' +
+    '<th>平台名称</th><th>规划名称</th><th class="num">规划(WUSD)</th><th class="num">规划¥</th><th class="num">可用</th><th class="num">IT外包执行</th><th class="num">OD执行</th><th class="num">剩余</th><th class="num">目标</th><th style="min-width:170px">执行率</th>' +
     '</tr></thead><tbody>' + rows.join('') + '</tbody>' +
-    '<tfoot><tr><td>合计</td><td></td><td class="num">' + fmtUsd(sum(c.plansY, p => p.amountUsd || 0)) + '</td><td class="num">' + fmtCny(c.planCnyTotal) + '</td><td class="num">' + fmtCny(c.availTotal) + '</td><td class="num">' + fmtCny(c.itwExec) + '</td><td class="num">' + fmtCny(c.odExec) + '</td><td class="num">' + fmtCny(c.remainTotal) + '</td><td class="num">' + fmtPct(yearParams(curYear()).execRateTarget) + '</td><td>' + fmtPct(c.execRate) + '</td></tr></tfoot></table>' + exclHint;
+    '<tfoot><tr><td>合计</td><td></td><td class="num">' + fmtWusd(sum(c.plansY, wusdOf)) + '</td><td class="num">' + fmtCny(c.planCnyTotal) + '</td><td class="num">' + fmtCny(c.availTotal) + '</td><td class="num">' + fmtCny(c.itwExec) + '</td><td class="num">' + fmtCny(c.odExec) + '</td><td class="num">' + fmtCny(c.remainTotal) + '</td><td class="num">' + fmtPct(yearParams(curYear()).execRateTarget) + '</td><td>' + fmtPct(c.execRate) + '</td></tr></tfoot></table>' + exclHint;
 }
 
 /* ================= 渲染：PO ================= */
@@ -1243,8 +1254,8 @@ function renderData() {
 
   const pw = $('#planTableWrap');
   pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项。</div>' :
-    '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额USD</th><th class="num">折合¥</th><th class="num">目标</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => '<tr><td><b>' + esc(p.name) + '</b></td><td>' + (p.code ? esc(p.code) : '<span class="muted">待关联</span>') + '</td><td class="num">' + fmtUsd(p.amountUsd) + '</td><td class="num">' + fmtCny((p.amountUsd || 0) * m.fxRate) + '</td><td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td>' + esc(p.note || '') + '</td>' +
+    '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
+    c.plansY.map(p => '<tr><td><b>' + esc(p.name) + '</b></td><td>' + (p.code ? esc(p.code) : '<span class="muted">待关联</span>') + '</td><td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td><td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td>' + esc(p.note || '') + '</td>' +
       '<td style="white-space:nowrap"><button class="btn small" data-action="plan:edit" data-id="' + p.id + '">编辑</button> <button class="btn small danger" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>';
 
   const gw = $('#grantTableWrap');
@@ -1274,10 +1285,10 @@ const field = (label, inner) => '<label class="field"><span class="field-label">
 
 function planModal(p) {
   const isNew = !p;
-  p = p || { name: '', code: '', amountUsd: '', note: '' };
+  p = p || { name: '', code: '', amountW: '', note: '' };
   openModal('<h3>' + (isNew ? '新增规划项' : '编辑规划项') + '</h3><div class="form-grid">' +
     field('规划名称（年初口径）', '<input id="f-name" type="text" value="' + esc(p.name) + '">') +
-    field('金额（USD）', '<input id="f-amount" type="text" inputmode="decimal" value="' + (p.amountUsd || '') + '" placeholder="如 50000">') +
+    field('金额（WUSD·万美金，可带小数）', '<input id="f-amount" type="text" inputmode="decimal" value="' + (p.amountW != null && p.amountW !== '' ? p.amountW : '') + '" placeholder="如 5.5 = $55,000">') +
     field('平台编码（可留空，授予后关联）', '<input id="f-code" type="text" value="' + esc(p.code || '') + '" placeholder="如 111">') +
     field('执行率目标（%）', '<input id="f-target" type="text" inputmode="decimal" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" placeholder="留空=年度默认；0=不考核，如 100 / 92">') +
     field('备注', '<input id="f-note" type="text" value="' + esc(p.note || '') + '">') +
@@ -1297,7 +1308,7 @@ function grantModal(g) {
 }
 function planPasteModal() {
   openModal('<h3>批量粘贴规划</h3>' +
-    '<div class="muted" style="margin-bottom:8px">每行一个规划项，格式：<b>名称, 金额USD[, 编码][, 目标%]</b>（逗号/制表符分隔，金额支持 5万；目标留空=年度默认、0=不考核，如 100 / 92）。年初从清单粘贴新建；新年粘贴后改金额。<b>替换</b>按名称保留已有编码关联。</div>' +
+    '<div class="muted" style="margin-bottom:8px">每行一个规划项，格式：<b>名称, 金额WUSD[, 编码][, 目标%]</b>（逗号/制表符分隔；金额单位<b>万美金</b>保留小数，如 5.5；≥1000 视为美元自动换算；目标留空=年度默认、0=不考核）。年初从清单粘贴新建；新年粘贴后改金额。<b>替换</b>按名称保留已有编码关联。</div>' +
     '<textarea id="pastePlans" rows="9" placeholder="盘古平台建设, 50000\n智能运维中台, 3万\n数据治理专项, 20000, 333"></textarea>' +
     '<div id="planPastePreview"></div>' +
     '<div class="modal-actions"><button class="btn" data-action="modal:close">取消</button>' +
@@ -1311,14 +1322,14 @@ function parsePlanLines(text) {
     const parts = l.split(/[\t,，]+/).map(s => s.trim());
     let target = null;
     if (parts[3] != null && parts[3] !== '') { const tv = parseFloat(parts[3]); if (Number.isFinite(tv) && tv >= 0 && tv <= 100) target = tv / 100; }
-    return { name: parts[0] || '', amountUsd: parseMoney(parts[1]) || 0, code: parts[2] || '', target };
+    return { name: parts[0] || '', amountW: parseWusd(parts[1]) || 0, code: parts[2] || '', target };
   }).filter(x => x.name);
 }
 function renderPlanPastePreview() {
   const rows = parsePlanLines($('#pastePlans').value);
   $('#planPastePreview').innerHTML = rows.length
     ? '<div class="muted" style="margin:8px 0 4px">识别 ' + rows.length + ' 项：</div><div class="paste-preview"><table>' +
-      rows.map(r => '<tr><td>' + esc(r.name) + '</td><td>' + fmtUsd(r.amountUsd) + '</td><td>' + esc(r.code || '—') + '</td><td>' + (r.target == null ? '默认' : r.target === 0 ? '不考核' : fmtPct(r.target)) + '</td></tr>').join('') + '</table></div>'
+      rows.map(r => '<tr><td>' + esc(r.name) + '</td><td>' + fmtWusd(r.amountW) + '</td><td>' + esc(r.code || '—') + '</td><td>' + (r.target == null ? '默认' : r.target === 0 ? '不考核' : fmtPct(r.target)) + '</td></tr>').join('') + '</table></div>'
     : '';
 }
 function planPasteGo(mode) {
@@ -1331,11 +1342,11 @@ function planPasteGo(mode) {
     const kept = [];
     rows.forEach(r => {
       const hit = old.find(o => o.name === r.name || (r.code && o.code === r.code));
-      kept.push({ id: hit ? hit.id : uid(), year: Y, code: r.code || (hit ? hit.code : ''), name: r.name, amountUsd: r.amountUsd, target: r.target, note: hit ? hit.note : '' });
+      kept.push({ id: hit ? hit.id : uid(), year: Y, code: r.code || (hit ? hit.code : ''), name: r.name, amountW: r.amountW, target: r.target, note: hit ? hit.note : '' });
     });
     state.plans = state.plans.filter(p => p.year !== Y).concat(kept);
   } else {
-    rows.forEach(r => state.plans.push({ id: uid(), year: Y, code: r.code, name: r.name, amountUsd: r.amountUsd, target: r.target, note: '' }));
+    rows.forEach(r => state.plans.push({ id: uid(), year: Y, code: r.code, name: r.name, amountW: r.amountW, target: r.target, note: '' }));
   }
   touch('plan'); save(); closeModal();
   alert('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 项规划（' + Y + ' 年）。');
@@ -1505,7 +1516,7 @@ function linkModal() {
     return '<tr><td><b>' + esc(s.name) + '</b> [' + esc(code) + ']</td>' +
       '<td>' + (cur ? '✓ 已关联「' + esc(cur.name) + '」' :
         '<select data-linkcode="' + esc(code) + '"><option value="">— 选择规划项 —</option>' +
-        unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtUsd(p.amountUsd) + '</option>').join('') +
+        unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtWusd(wusdOf(p)) + 'W$</option>').join('') +
         '<option value="__new__">＋ 新建规划项</option></select>') + '</td></tr>';
   }).join('');
   openModal('<h3>编码关联</h3>' +
@@ -1546,10 +1557,10 @@ function demoState() {
       { id: 'tg3', kind: 'od', name: 'OD工程师', headcount: 1, rate: 10500, project: '花钱项目A' }
     ],
     plans: [
-      { id: 'pl1', year: y, code: '111', name: '盘古平台建设', amountUsd: 50000, target: 1, note: '要求100%' },
-      { id: 'pl2', year: y, code: '222', name: '智能运维中台', amountUsd: 30000, note: '' },
-      { id: 'pl3', year: y, code: '', name: '数据治理专项', amountUsd: 20000, target: 0, note: '不考核，等授予后关联' },
-      { id: 'pl4', year: y, code: '444', name: '安全合规加固', amountUsd: 15000, target: 0.92, note: '目标92%' }
+      { id: 'pl1', year: y, code: '111', name: '盘古平台建设', amountW: 5, target: 1, note: '要求100%' },
+      { id: 'pl2', year: y, code: '222', name: '智能运维中台', amountW: 3, note: '' },
+      { id: 'pl3', year: y, code: '', name: '数据治理专项', amountW: 2.5, target: 0, note: '不考核，等授予后关联' },
+      { id: 'pl4', year: y, code: '444', name: '安全合规加固', amountW: 1.5, target: 0.92, note: '目标92%' }
     ],
     grantLogs: [
       { date: y + '-03-15', code: '111', amountCny: 150000, note: '首批' },
@@ -1667,9 +1678,9 @@ async function handleAction(action, el, e) {
     return;
   }
   if (action === 'plan:save') {
-    const name = $('#f-name').value.trim(), amount = parseMoney($('#f-amount').value);
+    const name = $('#f-name').value.trim(), amountW = parseWusd($('#f-amount').value);
     if (!name) { alert('请填写规划名称'); return; }
-    if (amount == null || amount <= 0) { alert('请填写有效的 USD 金额'); return; }
+    if (amountW == null || amountW <= 0) { alert('请填写有效的万美金金额（如 5.5）'); return; }
     const code = $('#f-code').value.trim(), note = $('#f-note').value.trim();
     const tRaw = $('#f-target').value.trim();
     let target = null;
@@ -1678,8 +1689,8 @@ async function handleAction(action, el, e) {
       if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('执行率目标应为 0~100 的数字，或留空跟随年度默认'); return; }
       target = tv / 100;
     }
-    if (id) Object.assign(state.plans.find(p => p.id === id), { name, amountUsd: amount, code, target, note });
-    else state.plans.push({ id: uid(), year: curYear(), name, amountUsd: amount, code, target, note });
+    if (id) Object.assign(state.plans.find(p => p.id === id), { name, amountW, code, target, note });
+    else state.plans.push({ id: uid(), year: curYear(), name, amountW, code, target, note });
     touch('plan'); save(); closeModal();
     return;
   }
@@ -1778,8 +1789,8 @@ document.addEventListener('change', e => {
     if (v === '__new__') {
       const name = prompt('新规划项名称（将关联平台编码 ' + code + '）：');
       if (!name) { e.target.value = ''; return; }
-      const amt = parseMoney(prompt('金额（USD）：', '0') || '0') || 0;
-      state.plans.push({ id: uid(), year: curYear(), code, name, amountUsd: amt, note: '' });
+      const amt = parseWusd(prompt('金额（WUSD·万美金，如 5.5）：', '0') || '0') || 0;
+      state.plans.push({ id: uid(), year: curYear(), code, name, amountW: amt, note: '' });
     } else if (v) {
       const p = state.plans.find(x => x.id === v);
       if (p) p.code = code;
