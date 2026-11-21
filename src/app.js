@@ -1036,12 +1036,16 @@ function renderNow() {
   const kpi = (label, value, sub, cls) => '<div class="kpi"><div class="kpi-label">' + label + '</div><div class="kpi-value ' + (cls || '') + '">' + value + '</div><div class="kpi-sub">' + (sub || '') + '</div></div>';
   const rateCls = c.execRate == null ? '' : (c.execRate >= m.execRateTarget ? 'c-green' : (c.execRate >= c.timeProg - 0.05 ? 'c-blue' : 'c-red'));
   const foreCls = c.forecastRate == null ? '' : (c.forecastRate >= m.execRateTarget ? 'c-green' : 'c-red');
+  const grantCls = c.grantProg == null ? '' : (c.grantProg >= c.timeProg - 0.1 ? 'c-green' : 'c-red');
+  const itwRemain = sum(c.codes, x => c.per[x].itwRemain), odRemain = c.remainTotal - itwRemain;
   $('#nowProgress').innerHTML =
     '<div class="kpi-grid">' +
-    kpi('执行率', fmtPct(c.execRate), '目标 ' + fmtPct(m.execRateTarget) + ' · 时间 ' + fmtPct(c.timeProg), rateCls) +
+    kpi('执行率', fmtPct(c.execRate), '目标 ' + fmtPct(m.execRateTarget) + ' · 时间 ' + fmtPct(c.timeProg) + ' · 已执行 ' + fmtCny(c.execTotal), rateCls) +
     kpi('预计年底', fmtPct(c.forecastRate), 'PO预测 ' + fmtCny(c.poFuture) + ' + OD ' + fmtCny(c.odFuture), foreCls) +
-    kpi('可用（授予）', fmtCny(c.availTotal), '授予进度 ' + fmtPct(c.grantProg)) +
-    kpi('剩余可支配', fmtCny(c.remainTotal), '在途冻结 ' + fmtCny(c.poFrozen) + ' · 已执行 ' + fmtCny(c.execTotal)) +
+    kpi('授予进度', fmtPct(c.grantProg), fmtCny(c.availTotal) + ' / ' + fmtCny(c.planCnyTotal) + ' · 时间 ' + fmtPct(c.timeProg), grantCls) +
+    kpi('当前可支配', fmtCny(c.remainTotal), 'IT外包 ' + fmtCny(itwRemain) + ' · OD ' + fmtCny(odRemain), c.remainTotal < c.poFrozen ? 'c-amber' : '') +
+    kpi('在途冻结', fmtCny(c.poFrozen), c.openCnt + ' 个未关闭 PO · 预计返还 ' + fmtCny(c.poReturn)) +
+    kpi('规划（万美金）', fmtWusd(sum(c.plansY.filter(x => !x.dead), wusdOf)), '汇率 ' + c.fx + (c.plansY.some(x => x.dead) ? ' · 含失效 ' + fmtWusd(sum(c.plansY.filter(x => x.dead), wusdOf)) : '')) +
     '</div>' +
     '<div style="margin-top:10px">' + execRowHtml('总体', c.execRate, m.execRateTarget, c.timeProg, c.forecastRate) +
     c.codes.slice(0, 6).map(code => {
@@ -1242,10 +1246,11 @@ function renderBudget() {
 function renderPO() {
   const c = calc();
   const exclCnt = c.po ? c.po.rows.length - c.poList.length - c.poExcludedRows.length : 0;
-  $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · ' + c.poList.length + ' 行' + (exclCnt ? '（已剔除 ' + exclCnt + ' 行）' : '') + (c.poExcludedRows.length ? '（挂靠剔除 ' + c.poExcludedRows.length + ' 行）' : '') + ' · asOf=' + c.po.asOf + '月') : '';
+  const closedCnt = c.poList.filter(r => r.status === 'CLOSED').length;
+  $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · 只看未关闭 ' + (c.poList.length - closedCnt) + ' 个（已关闭 ' + closedCnt + ' 个不显示）' + (exclCnt ? ' · 已剔除 ' + exclCnt + ' 行' : '') + (c.poExcludedRows.length ? ' · 挂靠剔除 ' + c.poExcludedRows.length + ' 行' : '')) : '';
   const wrap = $('#poTableWrap');
   if (!c.po) { wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; $('#poFrozenWrap').innerHTML = ''; $('#poAdviceWrap').innerHTML = ''; $('#poAdviceSub').textContent = ''; return; }
-  const rows = [...c.poList].sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
+  const rows = c.poList.filter(r => r.status !== 'CLOSED').sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= c.po.asOf ? v : 0);
     const startM = r.startDate ? +String(r.startDate).slice(5, 7) : 0;
