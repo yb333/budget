@@ -982,13 +982,13 @@ function calc() {
   const unmatched = codes.filter(c => !planByCode[c]);
 
   // 汇总
-  const planCnyTotal = sum(plansY, p => wusdOf(p) * 10000 * fx);
+  const planCnyTotal = sum(plansY.filter(p => !p.dead), p => wusdOf(p) * 10000 * fx);
   let itwExec = 0, odExec = 0, availTotal = 0, itwFc = 0, remainTotal = 0;
   const per = {};
   codes.forEach(c => {
     const r = snap.rows[c];
     const p = planByCode[c] || null;
-    const planCny = p ? wusdOf(p) * 10000 * fx : null;
+    const planCny = (p && !p.dead) ? wusdOf(p) * 10000 * fx : null;
     const ie = r.itw.exec || 0, oe = r.od.exec || 0;
     const av = (r.itw.avail || 0) + (r.od.avail || 0);
     const rm = (r.itw.remain || 0) + (r.od.remain || 0);
@@ -1008,7 +1008,18 @@ function calc() {
   // PO 月度（实际：m < asOf；预测：m >= asOf）
   const poMonthlyAct = {}, poMonthlyFc = {}, poActByCode = {};
   let poFrozen = 0, poReturn = 0, openCnt = 0;
-  const poList = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0) : [];   // 剔除项的 PO 一并不计
+  const exclPosSet = new Set(m.excludedPos || []);
+  const poKey = r => r.poNo + '|' + (r.itProject || '');
+  // 两级剔除：预算来源级（连执行一起剔）+ PO级（挂靠：只剔你的PO管理，执行仍按平台口径计入执行率）
+  const poList = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && !exclPosSet.has(poKey(r))) : [];
+  const poExcludedRows = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && exclPosSet.has(poKey(r))) : [];
+  const poExclActByCode = {};
+  let poExclAct = 0;
+  poExcludedRows.forEach(r => {
+    const a = sum(Object.entries(r.months), ([mm, v]) => +mm < po.asOf ? v : 0);
+    poExclActByCode[r.budgetCode] = (poExclActByCode[r.budgetCode] || 0) + a;
+    poExclAct += a;
+  });
   const poAgg = {};   // 同一 PO 可能拆成多行（多个预算来源）：金额是 PO 级合并值，只算一次
   poList.forEach(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < (po ? po.asOf : 13) ? v : 0);
@@ -1148,6 +1159,7 @@ function calc() {
   const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
   const grantWarn = [];
   plansY.forEach(p => {
+    if (p.dead) return;   // 失效（预算下不来）：不再催BA
     if (!p.code || !per[p.code]) {
       if (wusdOf(p) > 0 && curM >= 3 && (!p.code || !snap || !snap.rows[p.code])) grantWarn.push({ name: p.name, msg: curM >= 3 ? '平台未见授予' : '' });
       return;
@@ -1159,7 +1171,7 @@ function calc() {
   // 交叉校验
   const checks = [];
   if (snap && po) codes.forEach(c => {
-    const a = poActByCode[c] || 0, b = per[c].itwExec;
+    const a = (poActByCode[c] || 0) + (poExclActByCode[c] || 0), b = per[c].itwExec;   // 加回挂靠PO执行额再比对
     const d = a - b;
     if (Math.abs(d) > Math.max(1000, b * 0.02)) checks.push({ code: c, name: snap.rows[c].name, poSum: a, execSum: b, diff: d });
   });
@@ -1178,6 +1190,7 @@ function calc() {
     timeProg, curM, poMonthlyAct, poMonthlyFc, poActByCode, poFrozen, poReturn, openCnt,
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
     poAdvice, odAdvice, grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
+    poExcludedRows, poExclAct, poExclActByCode,
     workdays, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend },
     poAvg, poAvgWd,
     odAsOfText: snap ? 'OD 执行截至 ' + (+snap.date.slice(5, 7)) + ' 月（平台口径，滞后约 1 个月）' : ''
@@ -1284,7 +1297,8 @@ function renderNow() {
     '<div style="margin-top:10px">' + execRowHtml('总体', c.execRate, m.execRateTarget, c.timeProg, c.forecastRate) +
     c.codes.slice(0, 6).map(code => {
       const s = c.per[code];
-      return execRowHtml(s.plan ? s.plan.name : s.name + '⚠️', s.execRate, s.target, c.timeProg, s.target === 0 ? '不考核' : null);
+      const nm = (s.plan && s.plan.dead ? s.plan.name + '（失效）' : (s.plan ? s.plan.name : s.name + '⚠️'));
+      return execRowHtml(nm, s.execRate, s.target, c.timeProg, (s.plan && s.plan.dead) ? '预算下不来' : (s.target === 0 ? '不考核' : null));
     }).join('') +
     (c.codes.length > 6 ? '<div class="muted" style="padding:4px 0">…共 ' + c.codes.length + ' 个预算来源，完整列表见下方「执行率明细」</div>' : '') + '</div>' +
     '<div class="muted" style="margin-top:4px">ℹ️ ' + esc(c.odAsOfText || '') + '</div>';
@@ -1478,10 +1492,10 @@ function renderBudget() {
 /* ================= 渲染：PO ================= */
 function renderPO() {
   const c = calc();
-  const exclCnt = c.po ? c.po.rows.length - c.poList.length : 0;
-  $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · ' + c.poList.length + ' 行' + (exclCnt ? '（已剔除 ' + exclCnt + ' 行）' : '') + ' · 当月起为平台预测（asOf=' + c.po.asOf + '月）') : '';
+  const exclCnt = c.po ? c.po.rows.length - c.poList.length - c.poExcludedRows.length : 0;
+  $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · ' + c.poList.length + ' 行' + (exclCnt ? '（已剔除 ' + exclCnt + ' 行）' : '') + (c.poExcludedRows.length ? '（挂靠剔除 ' + c.poExcludedRows.length + ' 行）' : '') + ' · asOf=' + c.po.asOf + '月') : '';
   const wrap = $('#poTableWrap');
-  if (!c.po) { wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; $('#poFrozenWrap').innerHTML = ''; return; }
+  if (!c.po) { wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; $('#poFrozenWrap').innerHTML = ''; $('#poAdviceWrap').innerHTML = ''; $('#poAdviceSub').textContent = ''; return; }
   const rows = [...c.poList].sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
     const act = sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
     const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= c.po.asOf ? v : 0);
@@ -1495,17 +1509,31 @@ function renderPO() {
       '<td class="num">' + fmtCny(act) + (fc ? ' <span class="muted">+' + fmtCny(fc) + '预测</span>' : '') + '</td>' +
       '<td><span class="st st-' + (r.status === 'CLOSED' ? 'accepted' : 'open') + '">' + r.status + '</span></td>' +
       '<td class="num">' + (r.status === 'OPEN' ? fmtCny(Math.max(r.amount - act, 0)) : '—') + '</td>' +
-      '<td class="num">' + (r.status === 'OPEN' && refund ? fmtCny(refund) : '—') + '</td></tr>';
+      '<td class="num">' + (r.status === 'OPEN' && refund ? fmtCny(refund) : '—') + '</td>' +
+      '<td><button class="btn small" data-action="po:exclAdd" data-key="' + esc(r.poNo + '|' + (r.itProject || '')) + '" title="挂靠/非我下的PO：从我的PO管理剔除（已执行额仍计入执行率）">挂靠剔除</button></td></tr>';
   }).join('');
-  wrap.innerHTML = '<table class="tbl"><thead><tr><th>PO</th><th>花钱项目</th><th>预算来源</th><th>费用起始</th><th class="num">PO金额</th><th class="num">已执行/预测</th><th>状态</th><th class="num">在途冻结</th><th class="num">预计返还</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  // 挂靠剔除区（PO 级：不参与我的 PO 管理，执行率仍按平台口径）
+  let exclHtml = '';
+  if (c.poExcludedRows.length) {
+    const exAgg = {};
+    c.poExcludedRows.forEach(r => {
+      const k = r.poNo + '|' + (r.itProject || '');
+      const g = exAgg[k] = exAgg[k] || { poNo: r.poNo, resName: r.resName, itProject: r.itProject, amount: 0, act: 0 };
+      g.amount = Math.max(g.amount, r.amount || 0);
+      g.act += sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
+    });
+    exclHtml = '<div class="cons-diff info" style="margin-top:10px">🚫 挂靠剔除 PO ' + Object.keys(exAgg).length + ' 个（累计已执行 ' + fmtCny(c.poExclAct) + ' <b>仍计入执行率</b>；已从台账/冻结/返还/月度图/PO建议中剔除）</div>' +
+      '<table class="tbl"><thead><tr><th>PO</th><th>内容</th><th>花钱项目</th><th class="num">金额</th><th class="num">已执行</th><th>操作</th></tr></thead><tbody>' +
+      Object.values(exAgg).map(g => '<tr><td><b>' + esc(g.poNo) + '</b></td><td>' + esc(g.resName || '') + '</td><td>' + esc(g.itProject || '—') + '</td><td class="num">' + fmtCny(g.amount) + '</td><td class="num">' + fmtCny(g.act) + '</td><td><button class="btn small" data-action="po:exclDel" data-key="' + esc(g.poNo + '|' + (g.itProject || '')) + '">恢复</button></td></tr>').join('') + '</tbody></table>';
+  }
+  wrap.innerHTML = '<table class="tbl"><thead><tr><th>PO</th><th>花钱项目</th><th>预算来源</th><th>费用起始</th><th class="num">PO金额</th><th class="num">已执行/预测</th><th>状态</th><th class="num">在途冻结</th><th class="num">预计返还</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>' + exclHtml;
   $('#poFrozenWrap').innerHTML =
     '<table class="cons-table">' +
     '<tr><td>OPEN PO 数</td><td>' + c.openCnt + '</td></tr>' +
     '<tr><td>在途冻结（PO金额 − 已执行）</td><td>' + fmtCny(c.poFrozen) + '</td></tr>' +
     '<tr><td>预计返还（OPEN PO 超出所属月的预测）</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
-    '</table><div class="muted" style="margin-top:6px">PO 按自然月下达：<b>所属月（费用起始月）内的预测</b>=即将执行，不算返还；<b>超出所属月</b>的预测=没花掉，验收（约 1 个月）后返还——记得催验收。</div>';
+    '</table><div class="muted" style="margin-top:6px">PO 按自然月下达：<b>所属月内的预测</b>=即将执行不算返还；<b>超出所属月</b>的预测=没花掉，验收后返还。挂靠 PO 不计入以上口径。</div>';
 
-  // 下月 PO 与 OD 建议（原行动建议页内容并入此处）
   $('#poAdviceSub').textContent = c.poAdvice ? ('决策点 ' + c.curM + '月18-19日 → 20日下 ' + c.poAdvice.nextM + '月 PO · ' + c.poAdvice.wd + ' 个工作日') : '';
   let adv = '<div class="empty">—</div>';
   if (c.poAdvice) {
@@ -1520,6 +1548,7 @@ function renderPO() {
   }
   $('#poAdviceWrap').innerHTML = adv;
 }
+
 
 /* ================= 渲染：数据管理 ================= */
 function renderData() {
@@ -1578,13 +1607,13 @@ function renderData() {
   const pw = $('#planTableWrap');
   pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项。</div>' :
     '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标%</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => '<tr><td><b>' + esc(p.name) + '</b></td>' +
+    c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5" title="已失效：预算下不来，不计入执行率分母"' : '') + '><td>' + (p.dead ? '<span class="st st-pending">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b></td>' +
       '<td><input data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px"></td>' +
       '<td class="num"><input data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
       '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
       '<td class="num"><input data-pedit="' + p.id + '" data-f="target" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" inputmode="decimal" placeholder="默认" style="width:56px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
       '<td>' + esc(p.note || '') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn small" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>' +
+      '<td style="white-space:nowrap"><button class="btn small" data-action="plan:dead" data-id="' + p.id + '">' + (p.dead ? '恢复' : '失效') + '</button> <button class="btn small danger" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>' +
     '<div class="muted" style="margin-top:6px">✏️ 金额/编码/目标可直接在表格里点开修改（万美金保留小数；目标留空=年度默认、0=不考核），改完点别处即自动保存。</div>';
 
   const gw = $('#grantTableWrap');
@@ -1671,7 +1700,7 @@ function planPasteGo(mode) {
     const kept = [];
     rows.forEach(r => {
       const hit = old.find(o => o.name === r.name || (r.code && o.code === r.code));
-      kept.push({ id: hit ? hit.id : uid(), year: Y, code: r.code || (hit ? hit.code : ''), name: r.name, amountW: r.amountW, target: r.target, note: hit ? hit.note : '' });
+      kept.push({ id: hit ? hit.id : uid(), year: Y, code: r.code || (hit ? hit.code : ''), name: r.name, amountW: r.amountW, target: r.target, dead: hit ? !!hit.dead : false, note: hit ? hit.note : '' });
     });
     state.plans = state.plans.filter(p => p.year !== Y).concat(kept);
   } else {
@@ -1921,6 +1950,25 @@ async function handleAction(action, el, e) {
   if (action === 'import:open') return importModal();
   if (action === 'import:pick') { const inp = $('#fileInput'); if (inp) inp.click(); return; }
   if (action === 'import:all') return importAll();
+  if (action === 'po:exclAdd') {
+    const c0 = calc();
+    const row = c0.poList.find(r => r.poNo + '|' + (r.itProject || '') === el.dataset.key);
+    if (!row) return;
+    if (!confirm('将 PO「' + (row.resName || row.poNo) + '」标记为挂靠剔除？\n\n影响：从你的 PO 台账/在途冻结/预计返还/月度图/PO建议中剔除；其<b>已执行金额仍计入执行率</b>（平台口径，钱确实从预算花了）。可随时恢复。'.replace(/<[^>]+>/g, ''))) return;
+    const yp = yearParams(curYear());
+    yp.excludedPos = yp.excludedPos || [];
+    if (yp.excludedPos.indexOf(el.dataset.key) < 0) yp.excludedPos.push(el.dataset.key);
+    state.years[curYear()] = yp;
+    save();
+    return;
+  }
+  if (action === 'po:exclDel') {
+    const yp = yearParams(curYear());
+    yp.excludedPos = (yp.excludedPos || []).filter(k => k !== el.dataset.key);
+    state.years[curYear()] = yp;
+    save();
+    return;
+  }
   if (action === 'act:toggle') {
     const st = actsStore(), h = el.dataset.h;
     if (st[h] && st[h].slice(0, 7) === todayStr().slice(0, 7)) delete st[h]; else st[h] = todayStr();
@@ -2003,6 +2051,14 @@ async function handleAction(action, el, e) {
     plansAll.forEach(p => { p.amountW = Math.round(wusdOf(p) * 10000 * 10000) / 10000; });
     touch('plan'); save();
     alert('已修复 ' + plansAll.length + ' 项规划金额（×10000）。请到规划表核对数值，小数位如与清单不符请手动改。');
+    return;
+  }
+  if (action === 'plan:dead') {
+    const p = state.plans.find(x => x.id === id);
+    if (!p) return;
+    if (!p.dead && !confirm('将「' + p.name + '」标记为失效（预算下不来）？\n\n影响：从执行率分母（总体+分来源）中剔除，不再催 BA；金额与历史数据保留，可随时恢复。')) return;
+    p.dead = !p.dead;
+    touch('plan'); save();
     return;
   }
   if (action === 'plan:add') return planModal(null);
