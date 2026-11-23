@@ -538,20 +538,25 @@ function normYm(v) {
 function parseTeamPlan(rows) {
   const header = rows[0] || [], notes = [], out = [];
   const col = re => header.findIndex(h => re.test(String(h || '')));
-  const ymCol = col(/年月|月份|生效/), kindCol = col(/类型|渠道|分类/), priceCol = col(/单价|价格|费用|费率/), cntCol = col(/人数|数量|增减/), noteCol = col(/备注|说明/);
+  const endCol = col(/结束|离开|到期|截止/);   // 结束年月（可选）：填了 = 临时人员，只在 [生效年月, 结束年月) 这一段里算
+  const ymCol = header.findIndex((h, i) => i !== endCol && /年月|月份|生效|起始|开始/.test(String(h || '')));
+  const kindCol = col(/类型|渠道|分类/), priceCol = col(/单价|价格|费用|费率/), cntCol = col(/人数|数量|增减/), noteCol = col(/备注|说明/);
   if (ymCol < 0 || priceCol < 0 || cntCol < 0) return { list: [], notes: ['需要「生效年月」「单价」「人数」三列'] };
   rows.slice(1).forEach((r, i) => {
     const ym = normYm(r[ymCol]);
+    const end = endCol >= 0 && String(r[endCol] == null ? '' : r[endCol]).trim() !== '' ? normYm(r[endCol]) : '';
     const rate = parseMoney(r[priceCol]);
     const cnt = Math.round(parseFloat(String(r[cntCol] == null ? '' : r[cntCol]).replace(/[＋+人\s]/g, '').replace(/[－—–]/g, '-')));
-    if (!ym && rate == null && !cnt) return;   // 空行
+    if (!ym && !end && rate == null && !cnt) return;   // 空行
     if (!ym) { notes.push('第 ' + (i + 2) + ' 行的生效年月认不出（' + r[ymCol] + '）'); return; }
+    if (endCol >= 0 && String(r[endCol] == null ? '' : r[endCol]).trim() !== '' && !end) { notes.push('第 ' + (i + 2) + ' 行的结束年月认不出（' + r[endCol] + '）'); return; }
+    if (end && end <= ym) { notes.push('第 ' + (i + 2) + ' 行的结束年月需晚于生效年月'); return; }
     if (rate == null || rate <= 0) { notes.push('第 ' + (i + 2) + ' 行的单价无效'); return; }
     if (!cnt) { notes.push('第 ' + (i + 2) + ' 行的人数无效（填 +2 / -1）'); return; }
     let kind = kindCol >= 0 ? (/od/i.test(String(r[kindCol] || '')) ? 'od' : /po/i.test(String(r[kindCol] || '')) ? 'po' : '') : '';
     if (!kind) kind = /月/.test(String(header[priceCol] || '')) ? 'od' : (/日/.test(String(header[priceCol] || '')) ? 'po' : '');
     if (!kind) { notes.push('第 ' + (i + 2) + ' 行无法判断 PO/OD（类型列填 PO 或 OD，或单价列名含 日/月）'); return; }
-    out.push({ ym, kind, rate, count: cnt, note: noteCol >= 0 ? String(r[noteCol] || '').trim() : '' });
+    out.push({ ym, end, kind, rate, count: cnt, note: noteCol >= 0 ? String(r[noteCol] || '').trim() : '' });
   });
   return { list: out, notes };
 }
@@ -973,11 +978,16 @@ function calc() {
   const janWd = wdDefaultY(Y + 1, 1);   // 1 月 PO 属于明年，用明年的日历
 
   /* ---- 团队理论值（含「变动计划」）----
-     团队配置 = 现在在岗的人；变动计划 = 从某个生效年月起，同类型同单价人数的增量（+/−）。
-     某年月的有效人数 = 现有人数 + 生效年月 ≤ 该年月的变动之和。
-     生效年月填的是"成本归属月"（到岗的月份 / 离场后的第一个月）；OD 扣减的滞后不在这里处理，由扣减日历决定用哪个月的人数。 */
+     团队配置（PO / OD 页签）= 常驻人员，现在在岗的。变动计划里有两种行：
+       ① 填了「结束年月」= 临时人员：只在 [生效年月, 结束年月) 这一段里算，和页签无关（页签里不要列临时人员）
+       ② 没填「结束年月」= 常驻人员的进出：用来还原过去月份的人数
+            往将来看，加上"现在之后、该月及以前"生效的变动；往过去看，减去"该月之后、现在及以前"生效的变动
+     生效年月 = 成本归属月（到岗的月份；离场填离场后的第一个月），按整月算。
+     OD 扣减的滞后不在这里处理，由扣减日历决定用哪个月的人数（见下方 odDeduct）。 */
   const team = state.team || [];
   const plan = Array.isArray(state.teamPlan) ? state.teamPlan : [];
+  const perms = plan.filter(p => !p.end);
+  const temps = plan.filter(p => p.end);
   const poGroups = team.filter(g => g.kind === 'po');
   const odGroups = team.filter(g => g.kind === 'od');
   const hasPoCfg = poGroups.some(g => (g.headcount || 0) > 0) || plan.some(p => p.kind === 'po');
@@ -986,30 +996,33 @@ function calc() {
   const ymOf = (yy, mo) => yy + '-' + String(mo).padStart(2, '0');
   const nowYm = todayStr().slice(0, 7);   // 团队配置反映的是"现在"的人数
   const ownerOf = p => team.find(g => g.kind === p.kind && g.rate === p.rate);   // 一条变动只落到同类型同单价的第一个组（两个组单价相同时不能重复计入）
-  // 某年月的有效人数：往将来看，加上"现在之后、该月及以前"生效的变动；往过去看，减去"该月之后、现在及以前"生效的变动
-  //   例：现在 11 月、OD 在岗 2 人，计划里记了 11 月 +1 → 10 月人数 = 2 − 1 = 1，11 月底扣的 10 月费用按 1 人算
   const deltaAt = (p, ym) => (p.ym <= ym && p.ym > nowYm) ? p.count : (p.ym > ym && p.ym <= nowYm) ? -p.count : 0;
-  const hcAt = (g, yy, mo) => Math.max(0, (g.headcount || 0) + sum(plan.filter(p => ownerOf(p) === g), p => deltaAt(p, ymOf(yy, mo))));
-  // 变动计划里出现了、团队配置里却没有同单价组的：按净人数算一个虚拟组
+  const hcAt = (g, yy, mo) => Math.max(0, (g.headcount || 0) + sum(perms.filter(p => ownerOf(p) === g), p => deltaAt(p, ymOf(yy, mo))));
+  // 常驻变动里出现了、团队配置里却没有同单价组的：按净人数算一个虚拟组
   const virtualAt = (kind, yy, mo) => {
     const acc = {}, ym = ymOf(yy, mo);
-    plan.filter(p => p.kind === kind && !ownerOf(p)).forEach(p => { acc[p.rate] = (acc[p.rate] || 0) + deltaAt(p, ym); });
+    perms.filter(p => p.kind === kind && !ownerOf(p)).forEach(p => { acc[p.rate] = (acc[p.rate] || 0) + deltaAt(p, ym); });
     return Object.entries(acc).filter(([, c]) => c > 0).map(([rate, c]) => ({ rate: +rate, headcount: c }));
   };
-  const poDailyAt = (yy, mo) => sum(poGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('po', yy, mo), v => v.headcount * v.rate);
-  const odCostAt = (yy, mo) => sum(odGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('od', yy, mo), v => v.headcount * v.rate);
+  // 临时人员：生效年月 ≤ 该月 < 结束年月
+  const tempAt = (kind, yy, mo) => {
+    const acc = {}, ym = ymOf(yy, mo);
+    temps.filter(p => p.kind === kind && p.ym <= ym && ym < p.end).forEach(p => { acc[p.rate] = (acc[p.rate] || 0) + p.count; });
+    return Object.entries(acc).filter(([, c]) => c !== 0).map(([rate, c]) => ({ rate: +rate, headcount: c }));
+  };
+  const poDailyAt = (yy, mo) => sum(poGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('po', yy, mo), v => v.headcount * v.rate) + sum(tempAt('po', yy, mo), v => v.headcount * v.rate);
+  const odCostAt = (yy, mo) => sum(odGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('od', yy, mo), v => v.headcount * v.rate) + sum(tempAt('od', yy, mo), v => v.headcount * v.rate);
   const curMo = Math.max(Math.min(curM, 12), 1);
   const poDaily = hasPoCfg ? poDailyAt(Y, curMo) : 0;      // 现在的 PO 日额（含已生效的计划）
   const theoryOd = hasOdCfg ? odCostAt(Y, curMo) : 0;      // 现在的 OD 月额
   const theoryPo = mo => poDailyAt(Y, mo) * workdays(mo) * attend;
-  // 按「PO归属」拆分某年月的 PO 日额（来自团队 Excel 的归属列 / 归属清单）；没标归属的并成一组
+  // 按「PO归属」拆分某年月的 PO 日额（来自团队 Excel 的归属页签 / 归属列）；没标归属的（含临时 PO 人员）并成一组
   const poSplit = (yy, mo) => {
     const acc = {};
     poGroups.forEach(g => { const h = hcAt(g, yy, mo); if (h > 0) { const k = g.poGroup || ''; acc[k] = acc[k] || { daily: 0, hc: 0 }; acc[k].daily += h * (g.rate || 0); acc[k].hc += h; } });
-    virtualAt('po', yy, mo).forEach(v => { acc[''] = acc[''] || { daily: 0, hc: 0 }; acc[''].daily += v.headcount * v.rate; acc[''].hc += v.headcount; });
+    virtualAt('po', yy, mo).concat(tempAt('po', yy, mo)).forEach(v => { acc[''] = acc[''] || { daily: 0, hc: 0 }; acc[''].daily += v.headcount * v.rate; acc[''].hc += v.headcount; });
     return Object.entries(acc).map(([label, x]) => ({ label, daily: x.daily, hc: x.hc })).sort((a, b) => b.daily - a.daily);
   };
-
   /* ---- PO：PO 级字段按 PO 编号只取一次；行级（月度执行/预测）相加 ----
      info: s=所属月（费用起始月）, E=已执行, C=所属月内的预测, B=超出所属月的预测 */
   const asOf = po ? po.asOf : 13;
@@ -1055,7 +1068,8 @@ function calc() {
     }
     firstSnap = false; prevOd = t;
   });
-  const normalDeltas = Object.entries(odMonthly).filter(([mo]) => +mo !== 6 && +mo !== 12).map(([, v]) => v).slice(-3);
+  const normalAll = Object.entries(odMonthly).filter(([mo]) => +mo !== 6 && +mo !== 12).sort((a, b) => +a[0] - +b[0]);
+  const normalDeltas = normalAll.slice(-3).map(([, v]) => v);
   // 无差值历史（仅一次导入）时：OD 累计执行 ÷ 已过月数（快照月-1，执行表口径为 1-上月）估算月均
   const odMonths = snaps.length ? Math.max(+(snaps[snaps.length - 1].date.slice(5, 7)) - 1, 1) : 1;
   const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (odExec > 0 ? odExec / odMonths : 0);
@@ -1358,7 +1372,8 @@ function calc() {
       return parts;
     };
     const dailyNext = (hasPoCfg && nextM) ? poDailyAt(Y, nextM) : 0;
-    const planAhead = plan.filter(p => p.ym >= ymOf(Y, Math.max(curMo, 1))).sort((a, b) => a.ym < b.ym ? -1 : 1);   // 本月及以后生效的变动计划
+    const ymCur = ymOf(Y, curMo);
+    const planAhead = plan.filter(p => p.ym >= ymCur || (p.end && p.end > ymCur)).sort((a, b) => a.ym < b.ym ? -1 : 1);   // 本月及以后生效的、或本月还没结束的变动计划
     poDecision = {
       yearEnd, isDec: curM === 12, nextM, asOf,
       // ① PO（1–11 月：下月的 PO；12 月：下旬下明年 1 月的 PO）
@@ -1392,7 +1407,9 @@ function calc() {
 
   // 校准：团队理论 vs 历史实际
   const calibPo = (hasPoCfg && poAvg > 0) ? (theoryPo(curMo) - poAvg) / poAvg : null;
-  const calibOd = (hasOdCfg && odAvg > 0) ? (theoryOd - odAvg) / odAvg : null;
+  // OD 校准：只比"已有实际数的那几笔扣减"对应的费用月理论值（含变动计划的还原），计划内的加人/减人不算偏差
+  const odHistTh = normalAll.slice(-3).map(([mo]) => odCostAt(Y, Math.max(+mo - 1, 1)));
+  const calibOd = (hasOdCfg && odAvg > 0) ? ((odHistTh.length ? sum(odHistTh) / odHistTh.length : theoryOd) - odAvg) / odAvg : null;
 
   // 授予进度（催 BA）
   const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
@@ -1435,7 +1452,7 @@ function calc() {
     grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode,
     workdays, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
-      hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) }) },
+      hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) + sum(tempAt('od', yy, mo), v => v.headcount) }) },
     poAvg, poAvgWd,
     projects, hasProj, byPo, wallets, odRemainTotal, odOverList,
     importNotes: state.importNotes || [],
@@ -1634,7 +1651,7 @@ function renderNow() {
           (p.alloc.length ? '　← ' + p.alloc.map(x => wl(x) + ' ' + fmtCny(x.amt)).join('、') : '<span style="color:var(--red)">　没有可用的钱包</span>') + '</div>').join('');
     };
     const planHtml = () => d.planAhead.length
-      ? '<div class="ins-sub" style="color:var(--purple)">已计入变动计划：' + d.planAhead.map(p => esc(p.ym.slice(2).replace('-', '年')) + '月 ' + p.kind.toUpperCase() + ' ' + (p.count > 0 ? '+' : '') + p.count + ' 人（' + (p.kind === 'po' ? '日' : '月') + '单价 ' + fmtCny(p.rate) + '）' + (p.note ? '·' + esc(p.note) : '')).join('；') + '</div>'
+      ? '<div class="ins-sub" style="color:var(--purple)">已计入变动计划：' + d.planAhead.map(p => esc(p.ym.slice(2).replace('-', '年')) + '月' + (p.end ? '–' + esc(p.end.slice(2).replace('-', '年')) + '月前 ' : ' ') + p.kind.toUpperCase() + ' ' + (p.count > 0 ? '+' : '') + p.count + ' 人' + (p.end ? '（临时）' : '') + '（' + (p.kind === 'po' ? '日' : '月') + '单价 ' + fmtCny(p.rate) + '）' + (p.note ? '·' + esc(p.note) : '')).join('；') + '</div>'
       : '';
     /* ① PO */
     if (d.isDec) {
@@ -2057,24 +2074,36 @@ function renderData() {
       (c.poAvg > 0 ? '<tr><td>vs 近3月 PO 实际月均</td><td>' + fmtCny(c.poAvg) + (c.team.calibPo != null ? '（偏差 ' + fmtPct(c.team.calibPo) + '）' : '') + '</td></tr>' : '') +
       '</table>' + ((Math.abs(c.team.calibPo || 0) > 0.1 || Math.abs(c.team.calibOd || 0) > 0.1) ? '<div class="cons-diff info">ℹ️ 理论与实际偏差超 10%：检查人数、单价或出勤系数。</div>' : '<div class="cons-diff ok">✓ 团队配置与历史实际吻合</div>');
   }
-  // 变动计划（团队 Excel「变动计划」页签）：生效年月 = 成本归属月；OD 扣减的滞后由系统按扣减日历处理
+  // 变动计划（团队 Excel「变动计划」页签）：填了结束年月 = 临时人员（只在这一段里算）；没填 = 常驻人员的进出
   const tPlan = Array.isArray(state.teamPlan) ? state.teamPlan : [];
   const curMo2 = Math.max(Math.min(c.curM, 12), 1);
   const ymNow = Y + '-' + String(curMo2).padStart(2, '0');
+  const ymTxt = ym => ym.slice(0, 4) + '年' + (+ym.slice(5, 7)) + '月';
   const planEffect = p => {
     const yy = +p.ym.slice(0, 4), mm = +p.ym.slice(5, 7);
-    if (yy > Y) return '计入 ' + yy + ' 年（1 月 PO 等已按它估算）';
-    if (p.kind === 'po') return '从该月起，每张 PO 每天' + (p.count > 0 ? '多' : '少') + ' ' + fmtCny(Math.abs(p.count) * p.rate);
-    return '该月的人从 ' + (mm >= 11 ? '12 月 31 日的年终清算' : (mm + 1) + ' 月底的扣减') + '开始体现';
+    if (p.end) {
+      const ey = +p.end.slice(0, 4), em = +p.end.slice(5, 7);
+      const months = (ey - yy) * 12 + (em - mm);
+      return '临时人员：' + ymTxt(p.ym) + ' 起，到 ' + ymTxt(p.end) + ' 前为止（共 ' + months + ' 个月）' +
+        (p.kind === 'po' ? '，这期间每张 PO 每天' + (p.count > 0 ? '多' : '少') + ' ' + fmtCny(Math.abs(p.count) * p.rate) : '，从 ' + (mm >= 11 ? '12 月 31 日的年终清算' : (mm + 1) + ' 月底的扣减') + '开始体现');
+    }
+    if (yy > Y) return '常驻变动：计入 ' + yy + ' 年（1 月 PO 等已按它估算）';
+    if (p.kind === 'po') return '常驻变动：从该月起，每张 PO 每天' + (p.count > 0 ? '多' : '少') + ' ' + fmtCny(Math.abs(p.count) * p.rate);
+    return '常驻变动：该月的人从 ' + (mm >= 11 ? '12 月 31 日的年终清算' : (mm + 1) + ' 月底的扣减') + '开始体现，更早月份的人数相应还原';
   };
+  const planMo0 = Math.max(curMo2 - 1, 1);   // 各月人数表从上个月开始列（OD 有滞后，上个月的人数决定这个月底的扣减）
+  const planMos = Array.from({ length: 14 - planMo0 }, (_, i) => planMo0 + i);   // 最后一项 13 = 明年 1 月
   const planHtml2 = tPlan.length
-    ? '<div style="margin-top:12px"><b style="font-size:13px">变动计划</b> <span class="muted">来自团队 Excel「变动计划」页签 · 人数变化按整月算</span>' +
-      '<table class="tbl"><thead><tr><th>生效年月</th><th>类型</th><th class="num">单价</th><th class="num">人数</th><th>备注</th><th>对决策的影响</th></tr></thead><tbody>' +
-      tPlan.slice().sort((a, b) => a.ym < b.ym ? -1 : 1).map(p => '<tr' + (p.ym < ymNow ? ' style="opacity:.65"' : '') + '><td>' + esc(p.ym) + (p.ym < ymNow ? ' <span class="muted">已生效</span>' : '') + '</td><td>' + (p.kind === 'po' ? 'PO' : 'OD') + '</td><td class="num">' + fmtCny(p.rate) + '</td><td class="num">' + (p.count > 0 ? '+' : '') + p.count + '</td><td>' + esc(p.note || '') + '</td><td class="muted">' + planEffect(p) + '</td></tr>').join('') + '</tbody></table>' +
-      '<div class="muted" style="margin-top:6px">各月人数（含计划）：</div>' +
-      '<table class="tbl"><thead><tr>' + Array.from({ length: 13 - curMo2 + 1 }, (_, i) => (curMo2 + i <= 12 ? '<th class="num">' + (curMo2 + i) + '月</th>' : '<th class="num">明年1月</th>')).join('') + '</tr></thead><tbody><tr>' +
-      Array.from({ length: 13 - curMo2 + 1 }, (_, i) => { const mo = curMo2 + i, h = mo <= 12 ? c.team.hcSummary(Y, mo) : c.team.hcSummary(Y + 1, 1); return '<td class="num muted">PO ' + h.po + '<br>OD ' + h.od + '</td>'; }).join('') +
-      '</tr><tr>' + Array.from({ length: 13 - curMo2 + 1 }, (_, i) => { const mo = curMo2 + i; return '<td class="num muted">' + (mo <= 12 ? 'OD 扣 ' + fmtCny(c.odEst[mo] || 0) : 'PO 需 ' + fmtCny(c.poDecision ? c.poDecision.jan.need : 0)) + '</td>'; }).join('') + '</tr></tbody></table></div>'
+    ? '<div style="margin-top:12px"><b style="font-size:13px">变动计划</b> <span class="muted">来自团队 Excel「变动计划」页签 · 页签里只列常驻人员；填了「结束年月」的是临时人员；人数变化按整月算</span>' +
+      '<table class="tbl"><thead><tr><th>生效年月</th><th>结束年月</th><th>类型</th><th class="num">单价</th><th class="num">人数</th><th>备注</th><th>对决策的影响</th></tr></thead><tbody>' +
+      tPlan.slice().sort((a, b) => a.ym < b.ym ? -1 : 1).map(p => {
+        const ended = p.end && p.end <= ymNow;
+        return '<tr' + ((ended || (!p.end && p.ym < ymNow)) ? ' style="opacity:.65"' : '') + '><td>' + esc(ymTxt(p.ym)) + '</td><td>' + (p.end ? esc(ymTxt(p.end)) : '<span class="muted">常驻</span>') + '</td><td>' + (p.kind === 'po' ? 'PO' : 'OD') + '</td><td class="num">' + fmtCny(p.rate) + '</td><td class="num">' + (p.count > 0 ? '+' : '') + p.count + '</td><td>' + esc(p.note || '') + '</td><td class="muted">' + planEffect(p) + (ended ? '；已结束' : '') + '</td></tr>';
+      }).join('') + '</tbody></table>' +
+      '<div class="muted" style="margin-top:6px">各月人数（含计划）与对应的扣减 / 需求：</div>' +
+      '<table class="tbl"><thead><tr>' + planMos.map(mo => '<th class="num">' + (mo <= 12 ? mo + '月' : '明年1月') + '</th>').join('') + '</tr></thead><tbody>' +
+      '<tr>' + planMos.map(mo => { const h = mo <= 12 ? c.team.hcSummary(Y, mo) : c.team.hcSummary(Y + 1, 1); return '<td class="num muted">PO ' + h.po + '<br>OD ' + h.od + '</td>'; }).join('') + '</tr>' +
+      '<tr>' + planMos.map(mo => '<td class="num muted">' + (mo === 13 ? 'PO 需 ' + fmtCny(c.poDecision ? c.poDecision.jan.need : 0) : (mo < curMo2 ? '（上个月）' : mo === 12 ? 'OD 扣 ' + fmtCny(c.odEst[12] || 0) + '（年底）' : 'OD 扣 ' + fmtCny(c.odEst[mo] || 0))) + '</td>').join('') + '</tr></tbody></table></div>'
     : '';
   const anyOwn = team.some(g => g.kind === 'po' && g.poGroup);
   $('#teamTableWrap').innerHTML = (!team.length && !tPlan.length ? '<div class="empty">还没有团队配置——不配也能用（预测退回历史外推），配上后扩编/缩编的下月预测立即准确。</div>' : '') +
@@ -2417,9 +2446,9 @@ function demoState() {
       { id: 'tg2', kind: 'po', name: '初级开发', headcount: 4, rate: 1200, project: '', poGroup: 'PO乙' },
       { id: 'tg3', kind: 'od', name: 'OD工程师', headcount: 2, rate: 10500, project: '' }
     ],
-    teamPlan: [   // 变动计划（示例）：12 月临时加 2 个 OD（年终冲量）；明年 1 月 PO 团队进 3 个高级开发
-      { ym: y + '-12', kind: 'od', rate: 10500, count: 2, note: '年终冲量' },
-      { ym: (y + 1) + '-01', kind: 'po', rate: 2000, count: 3, note: '明年 1 月到岗' }
+    teamPlan: [   // 变动计划（示例）：12 月临时加 2 个 OD，到明年 1 月前为止（年终冲量）；明年 1 月 PO 团队进 3 个高级开发（常驻）
+      { ym: y + '-12', end: (y + 1) + '-01', kind: 'od', rate: 10500, count: 2, note: '年终冲量' },
+      { ym: (y + 1) + '-01', end: '', kind: 'po', rate: 2000, count: 3, note: '明年 1 月到岗' }
     ],
     plans: [
       { id: 'pl1', year: y, code: '111', name: '盘古平台建设', amountW: 25, target: 1, note: '要求100%' },
