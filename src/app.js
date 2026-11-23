@@ -1003,6 +1003,18 @@ function calc() {
       pool -= give;
     }
     for (let i = 0; i < alloc.length; i++) alloc[i].next = i + 1 < alloc.length ? alloc[i + 1].name : null;
+    // ===== 12月OD清算引擎 =====
+    let decSettle = null;
+    if (curM >= 11) {
+      const odBase2 = odGroups.length ? theoryOd : odAvg;
+      const odDecNeed = Math.round(odBase2 * (m.bonusMonths || 3.5));
+      const itwForOd = itwRemainTotal;
+      const odHave = sum(codes, x => per[x].odAvail);
+      const odCapacity = odHave + itwForOd;
+      const odCanAbsorb = Math.min(odDecNeed, odCapacity);
+      const surplusAfterOd = Math.max(itwForOd + odHave - odDecNeed, 0);
+      decSettle = { odDecNeed, odHave, itwForOd, odCapacity, odCanAbsorb, surplusAfterOd, odBase2 };
+    }
     // ===== 年底双月决策：12月冲目标 + 1月保团队不断档 =====
     let janPlan = null;
     if (curM === 11) {
@@ -1016,7 +1028,7 @@ function calc() {
       const janShort = Math.max(janNatural - availableForJan, 0);
       janPlan = { janWd, janNatural, availableForJan, janShort, sufficient: janShort <= 0 };
     }
-    poDecision = { natural, floor, suggested, ceiling, halfDay, oneDay, gap, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd, poDaily: poGroups.length ? poDaily : 0, attend: m.attendFactor != null ? m.attendFactor : 1, janPlan };
+    poDecision = { natural, floor, suggested, ceiling, halfDay, oneDay, gap, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd, poDaily: poGroups.length ? poDaily : 0, attend: m.attendFactor != null ? m.attendFactor : 1, janPlan, decSettle };
   }
 
   return {
@@ -1207,6 +1219,25 @@ function renderNow() {
           tier('① 下限（请假多于加班）', d.floor, '团队需求 − ' + fmtCny(d.halfDay) + '（半天日额）', '') +
           tier('② 建议下这个数 ★', d.suggested, '团队自然需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '×出勤' + d.attend + '）', 'border:2px solid var(--blue);background:var(--blue-bg)') +
           tier(d.yearEnd ? '③ 上限（年底：严格按建议）' : '③ 上限（加班/加人时）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，不加缓冲' : '建议 + ' + fmtCny(d.oneDay) + '（1天日额，覆盖加班+新人）', 'border:1px solid var(--amber)') +
+          '</div>';
+      }
+      // 12月OD清算面板
+      if (d.decSettle) {
+        const ds = d.decSettle;
+        box.innerHTML += '<div style="margin-top:12px;padding:10px;border:1px solid var(--amber);border-radius:8px;background:var(--amber-bg)">' +
+          '<b style="font-size:13px;color:var(--amber)">💰 12月OD清算规划</b><span class="muted">（12月31日一次扣完：11月费+12月费+年终奖 ≈ ' + (yearParams(curYear()).bonusMonths || 3.5) + ' × ' + fmtCny(ds.odBase2) + '/月）</span>' +
+          '<table class="cons-table" style="margin-top:6px">' +
+          '<tr><td>12月OD清算需求</td><td><b>' + fmtCny(ds.odDecNeed) + '</b></td></tr>' +
+          '<tr><td>OD 已有额度</td><td>' + fmtCny(ds.odHave) + '</td></tr>' +
+          '<tr><td>IT外包可调入</td><td>' + fmtCny(ds.itwForOd) + '</td></tr>' +
+          '<tr><td>OD 总容量</td><td>' + fmtCny(ds.odCapacity) + (ds.odCapacity >= ds.odDecNeed ? ' <span style="color:var(--green)">✓够</span>' : ' <span style="color:var(--red)">⚠缺</span>') + '</td></tr>' +
+          (ds.surplusAfterOd > 1000 ? '<tr><td><b>OD吃不完的剩余（执行不了）</b></td><td><b style="color:var(--red)">' + fmtCny(ds.surplusAfterOd) + '</b></td></tr>' : '') +
+          '</table>' +
+          (ds.odCapacity < ds.odDecNeed
+            ? '<div class="cons-diff warn" style="margin-top:6px">⚠ OD额度不足 ' + fmtCny(ds.odDecNeed - ds.odCapacity) + '——11月底前从IT外包调拨 ' + fmtCny(Math.min(ds.itwForOd, ds.odDecNeed - ds.odHave)) + ' 到OD</div>'
+            : ds.surplusAfterOd > 1000
+              ? '<div class="cons-diff warn" style="margin-top:6px">⚠ 即使OD全扣完，仍有 <b>' + fmtCny(ds.surplusAfterOd) + '</b> 执行不了——考虑：<br>① 增加OD人数（每加1人约多执行 ' + fmtCny(ds.odBase2) + '）<br>② 调低执行率目标<br>③ 留给1月PO</div>'
+              : '<div class="cons-diff ok" style="margin-top:6px">✓ OD清算额度恰好覆盖，年底执行率最大化</div>') +
           '</div>';
       }
       box.innerHTML += (d.gap > 0 ? (() => {
