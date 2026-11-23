@@ -123,6 +123,10 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .fold summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500;padding:4px 0}
 .fold[open] summary{margin-bottom:6px}
 .wl-line{font-size:12px;line-height:1.6;white-space:nowrap}
+/* 决策卡里"下 PO"的两张图 */
+.po-charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.po-chart-title{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:2px}
+@media(max-width:1100px){.po-charts{grid-template-columns:1fr}}
 /* 分享只读模式：隐藏所有操作按钮与数据管理页 */
 body.share [data-action]{display:none!important}
 body.share #tabNav button[data-tab="data"]{display:none}
