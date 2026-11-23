@@ -110,6 +110,19 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .onboard h2{font-size:16px;margin:0 0 6px}
 .wd-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 .wd-grid .field input{padding:5px 8px}
+/* 决策卡：操作指令块 / 年底推演 / 折叠的推演表 */
+.ins{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;padding:10px 14px;margin-top:8px;background:#fbfcff}
+.ins.ok{border-left-color:var(--green);background:var(--green-bg)}
+.ins-head{font-size:15px;font-weight:600}
+.ins-sub{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.7}
+.ins-sub b{color:var(--text)}
+.ye{border:1px dashed var(--line);border-radius:10px;padding:10px 14px;margin-top:12px;background:#fff}
+.ye-title{font-weight:600;font-size:14px}
+.ye-title .muted{font-weight:400;margin-left:8px}
+.fold{margin-top:12px}
+.fold summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500;padding:4px 0}
+.fold[open] summary{margin-bottom:6px}
+.wl-line{font-size:12px;line-height:1.6;white-space:nowrap}
 /* 分享只读模式：隐藏所有操作按钮与数据管理页 */
 body.share [data-action]{display:none!important}
 body.share #tabNav button[data-tab="data"]{display:none}
@@ -144,7 +157,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
     <div class="card">
-      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划USD×当年汇率 · OD 数据截至上月</span></div>
+      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划 × 汇率 · 考核线 = 各来源自己的目标 · 总体目标 = 按规划加权</span></div>
       <div id="nowProgress"></div>
     </div>
     <div class="card">
@@ -152,7 +165,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div id="nowRisk"></div>
     </div>
     <div class="card" id="poDecisionCard" style="border-left:4px solid var(--blue)">
-      <div class="card-title">Ⓣ 下 PO 决策 <span class="card-sub" id="poDecisionSub"></span></div>
+      <div class="card-title">Ⓣ 本周期操作与决策 <span class="card-sub" id="poDecisionSub"></span></div>
       <div id="poDecisionBox"></div>
     </div>
     <div class="card">
@@ -166,6 +179,10 @@ body.share #tabNav button[data-tab="data"]{display:none}
     <div class="grid-2">
       <div class="card"><div class="card-title">授予进度与资金水位 <span class="card-sub">催 BA 依据</span></div><div id="grantPanel"></div></div>
       <div class="card"><div class="card-title">数据校验 <span class="card-sub">PO明细 vs 执行表 · 授予流水 vs 执行表</span></div><div id="consistency"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">建议 vs 实际 <span class="card-sub">每次导入自动记一份建议，下次导入后用实际数回测</span></div>
+      <div class="tbl-wrap" id="backtestBox"></div>
     </div>
   </section>
   <section id="tab-budget" class="tab-panel">
@@ -185,7 +202,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div class="tbl-wrap" id="poTableWrap"></div>
     </div>
     <div class="grid-2">
-      <div class="card"><div class="card-title">在途与返还 <span class="card-sub">OPEN PO 未执行部分 = 冻结；超出执行窗口的预测 ≈ 验收后返还</span></div><div id="poFrozenWrap"></div></div>
+      <div class="card"><div class="card-title">在途与返还 <span class="card-sub">验收后多少钱、从哪张 PO 回到哪个钱包</span></div><div id="poFrozenWrap"></div></div>
       <div class="card"><div class="card-title">下月 PO 与 OD 建议 <span class="card-sub" id="poAdviceSub"></span></div><div id="poAdviceWrap"></div></div>
     </div>
   </section>

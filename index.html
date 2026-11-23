@@ -110,6 +110,19 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .onboard h2{font-size:16px;margin:0 0 6px}
 .wd-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 .wd-grid .field input{padding:5px 8px}
+/* 决策卡：操作指令块 / 年底推演 / 折叠的推演表 */
+.ins{border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:10px;padding:10px 14px;margin-top:8px;background:#fbfcff}
+.ins.ok{border-left-color:var(--green);background:var(--green-bg)}
+.ins-head{font-size:15px;font-weight:600}
+.ins-sub{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.7}
+.ins-sub b{color:var(--text)}
+.ye{border:1px dashed var(--line);border-radius:10px;padding:10px 14px;margin-top:12px;background:#fff}
+.ye-title{font-weight:600;font-size:14px}
+.ye-title .muted{font-weight:400;margin-left:8px}
+.fold{margin-top:12px}
+.fold summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500;padding:4px 0}
+.fold[open] summary{margin-bottom:6px}
+.wl-line{font-size:12px;line-height:1.6;white-space:nowrap}
 /* 分享只读模式：隐藏所有操作按钮与数据管理页 */
 body.share [data-action]{display:none!important}
 body.share #tabNav button[data-tab="data"]{display:none}
@@ -144,7 +157,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
     <div class="card">
-      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划USD×当年汇率 · OD 数据截至上月</span></div>
+      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划 × 汇率 · 考核线 = 各来源自己的目标 · 总体目标 = 按规划加权</span></div>
       <div id="nowProgress"></div>
     </div>
     <div class="card">
@@ -152,7 +165,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div id="nowRisk"></div>
     </div>
     <div class="card" id="poDecisionCard" style="border-left:4px solid var(--blue)">
-      <div class="card-title">Ⓣ 下 PO 决策 <span class="card-sub" id="poDecisionSub"></span></div>
+      <div class="card-title">Ⓣ 本周期操作与决策 <span class="card-sub" id="poDecisionSub"></span></div>
       <div id="poDecisionBox"></div>
     </div>
     <div class="card">
@@ -166,6 +179,10 @@ body.share #tabNav button[data-tab="data"]{display:none}
     <div class="grid-2">
       <div class="card"><div class="card-title">授予进度与资金水位 <span class="card-sub">催 BA 依据</span></div><div id="grantPanel"></div></div>
       <div class="card"><div class="card-title">数据校验 <span class="card-sub">PO明细 vs 执行表 · 授予流水 vs 执行表</span></div><div id="consistency"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">建议 vs 实际 <span class="card-sub">每次导入自动记一份建议，下次导入后用实际数回测</span></div>
+      <div class="tbl-wrap" id="backtestBox"></div>
     </div>
   </section>
   <section id="tab-budget" class="tab-panel">
@@ -185,7 +202,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div class="tbl-wrap" id="poTableWrap"></div>
     </div>
     <div class="grid-2">
-      <div class="card"><div class="card-title">在途与返还 <span class="card-sub">OPEN PO 未执行部分 = 冻结；超出执行窗口的预测 ≈ 验收后返还</span></div><div id="poFrozenWrap"></div></div>
+      <div class="card"><div class="card-title">在途与返还 <span class="card-sub">验收后多少钱、从哪张 PO 回到哪个钱包</span></div><div id="poFrozenWrap"></div></div>
       <div class="card"><div class="card-title">下月 PO 与 OD 建议 <span class="card-sub" id="poAdviceSub"></span></div><div id="poAdviceWrap"></div></div>
     </div>
   </section>
@@ -277,7 +294,7 @@ function fmtCny(v) {
   if (v == null || Number.isNaN(v)) return '—';
   const n = Number(v), sign = n < 0 ? '-' : '', a = Math.abs(n);
   if (a >= 10000) { let t = (a / 10000).toFixed(2); if (t.indexOf('.') >= 0) t = t.replace(/0+$/, '').replace(/\.$/, ''); return sign + '¥' + t + '万'; }
-  return sign + '¥' + a.toLocaleString('zh-CN');
+  return sign + '¥' + Math.round(a).toLocaleString('zh-CN');
 }
 const fmtUsd = v => (v == null || Number.isNaN(v)) ? '—' : '$' + Number(v).toLocaleString('en-US');
 const fmtPct = v => (v == null || !Number.isFinite(v)) ? '—' : (v * 100).toFixed(1) + '%';
@@ -307,6 +324,12 @@ const HOLIDAYS = {
   2026: {
     off: ['01-01','01-02','01-03','02-15','02-16','02-17','02-18','02-19','02-20','02-21','02-22','02-23','04-04','04-05','04-06','05-01','05-02','05-03','05-04','05-05','06-19','06-20','06-21','09-25','09-26','09-27','10-01','10-02','10-03','10-04','10-05','10-06','10-07'],
     work: ['01-04','02-14','02-28','05-09','09-20','10-10']
+  },
+  // 国办 2026-11-05 发布：春节 2/5-2/13（1/31、2/14 上班）；清明 4/3-4/5；劳动节 5/1-5/5（5/8 上班）；
+  // 端午 6/9；中秋 9/15；国庆 10/1-10/7（9/26、10/9 上班）
+  2027: {
+    off: ['01-01','01-02','01-03','02-05','02-06','02-07','02-08','02-09','02-10','02-11','02-12','02-13','04-03','04-04','04-05','05-01','05-02','05-03','05-04','05-05','06-09','09-15','10-01','10-02','10-03','10-04','10-05','10-06','10-07'],
+    work: ['01-31','02-14','05-08','09-26','10-09']
   }
 };
 // 春节(正月初一)/端午(五月初五)/中秋(八月十五) 公历日期表（个别农历日或有±1天，误差可忽略）
@@ -351,6 +374,7 @@ function parseMonthHeader(h) {
 /* ================= 状态 ================= */
 let state = null;
 let charts = {};
+let foldOpen = false;                           // 决策卡里「分来源推演表」的展开状态（重渲染时保留）
 let SHARE_MODE = false, SHARE_PKG = null;   // 分享只读模式（服务目录存在 data.json 时启用）
 let fileHandle = null;                       // 数据文件句柄（File System Access，会话内记忆）
 let fileConnected = false;                   // budget.json 写穿连接状态（断连时数据仅存浏览器缓存，重连即同步）
@@ -393,23 +417,23 @@ async function idbGet(k) { const db = await idbOpen(); return new Promise((res, 
 async function loadFromHandle(h, silent) {
   const f = await h.getFile();
   const obj = JSON.parse(await f.text());
-  let data = obj;
+  let data = upToV4(obj);
   if (data && data.type === 'budget-dash-config') throw new Error('这是配置包，请用「恢复」导入');
   if (data && data.type === 'budget-dash-data') throw new Error('这是数据包，请用「恢复」导入');
-  if (data && data.schemaVersion === 2) data = migrate(data);
-  if (!data || data.schemaVersion !== 3 || !Array.isArray(data.plans)) throw new Error('不是看板数据文件');
+  if (!data || !Array.isArray(data.plans)) throw new Error('不是看板数据文件');
   fileHandle = h; recentHandle = h; fileConnected = true;
   try { await idbSet('fh', h); } catch (e) { }
   state = data; saveSilent(); renderAll();
   if (!silent) alert('已载入 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
   const b = $('#quickLoadBtn'); if (b) b.style.display = 'none';
 }
-async function walkDir(dir, out, depth) {
+// 数据集文件夹：一级子文件夹名 = 花钱项目标识（文件的项目归属靠它，不靠程序猜测）；根目录下的文件不属于任何项目
+async function walkDir(dir, out, depth, proj) {
   depth = depth || 0;
   if (depth > 3) return;
   for await (const [name, h] of dir.entries()) {
-    if (h.kind === 'file') { if (/\.(xlsx|xls|csv)$/i.test(name)) out.push(await h.getFile()); }
-    else if (h.kind === 'directory') await walkDir(h, out, depth + 1);
+    if (h.kind === 'file') { if (/\.(xlsx|xls|csv)$/i.test(name)) out.push({ file: await h.getFile(), project: proj || '' }); }
+    else if (h.kind === 'directory') await walkDir(h, out, depth + 1, proj || name);
   }
 }
 function fileSnapDate(f) {
@@ -434,50 +458,144 @@ async function scanDataset(manual) {
   try { await walkDir(dirHandle, files); } catch (e) { if (manual) alert('读取文件夹失败：' + e.message); return false; }
   let known = {};
   try { known = JSON.parse(localStorage.getItem('budgetDash.dataset') || '{}'); } catch (e) { }
-  const fresh = files.filter(f => { const sig = f.name + '|' + f.size + '|' + f.lastModified; return !known[sig]; });
+  const sigOf = it => it.project + '|' + it.file.name + '|' + it.file.size + '|' + it.file.lastModified;   // 含所在文件夹：挪动过 = 新文件
+  const fresh = files.filter(it => !known[sigOf(it)]);
   if (!fresh.length) { if (manual) alert('数据集文件夹里没有新文件（识别到的 ' + files.length + ' 个文件都已导入过）'); return false; }
-  files.forEach(f => { known[f.name + '|' + f.size + '|' + f.lastModified] = 1; });
+  files.forEach(it => { known[sigOf(it)] = 1; });
   localStorage.setItem('budgetDash.dataset', JSON.stringify(known));
   const summary = await importFilesAuto(fresh);
+  save();
   alert('📁 数据集自动导入完成：\n\n' + summary + '\n\n快照日期按文件导出时间记录。');
   return true;
 }
-async function importFilesAuto(files) {
+async function importFilesAuto(items) {
+  const parsed = [];
+  for (const it of items) {
+    const f = it.file;
+    try {
+      const rows = await parseWorkbookFile(f);
+      const kind = detectKind(rows);
+      const rec = { name: f.name, project: it.project || '', kind, rows, file: f, snapDate: fileSnapDate(f) };
+      if (kind === 'team') { try { rec.sheets = await parseAllSheets(f); } catch (e) { } }
+      parsed.push(rec);
+    } catch (err) { parsed.push({ name: f.name, project: it.project || '', kind: '', error: '解析失败 ' + err.message }); }
+  }
+  const r = importParsed(parsed);
+  if (r.touched) recordImportLog(calc());   // 每次导入记一份决策快照（并回测上次的估计）
+  return r.text;
+}
+// 已导入过的花钱项目（子文件夹名），供手动导入时选择
+function knownProjects() {
+  const s = new Set(Object.keys(state.projPrints || {}));
+  (state.execSnaps || []).forEach(x => Object.keys(x.byProject || {}).forEach(p => s.add(p)));
+  return Array.from(s).sort();
+}
+// 导入核心（数据集自动扫描与手动拖拽共用）。items = [{name, project, kind, rows, sheets?, snapDate, error?}]
+// project = 花钱项目标识（文件所在的一级子文件夹名）。执行表没有项目列，必须带 project 才导入。
+function importParsed(items) {
   const parts = [];
   const poAll = []; let asOf = 0;
-  const execByDate = {};
-  for (const f of files) {
-    let rows;
-    try { rows = await parseWorkbookFile(f); } catch (err) { parts.push('❌ ' + f.name + '：解析失败 ' + err.message); continue; }
-    const kind = detectKind(rows);
-    if (kind === 'po') {
-      const r = parsePoRows(rows);
-      asOf = Math.max(asOf, r.asOf);
-      poAll.push(...r.rows);
-      parts.push('📄 ' + f.name + '（PO明细）：' + r.rows.length + ' 行');
-    } else if (kind === 'exec') {
-      const d = fileSnapDate(f);
-      mergeExecRows(execByDate[d] = execByDate[d] || {}, parseExecRows(rows));
-      parts.push('📄 ' + f.name + '（执行表）→ 快照 ' + d);
-    } else if (kind === 'team') {
-      const sheets = await parseAllSheets(f);
-      let persons = parseTeamSheets(sheets).groups;
-      if (!persons.length) persons = parseTeamTable(rows);
-      if (!persons.length) throw new Error('未识别到人员（需要 PO/OD 页签+姓名/单价列，或 类型/人数/单价 列）');
-      state.team = persons.map(g => ({ id: uid(), ...g }));
-      touch('team');
-      const pN = sum(persons, g => g.headcount || 0);
-      parts.push('👥 ' + f.name + '（团队配置）：' + pN + ' 人 / ' + persons.length + ' 组已更新（以数据集为准）');
-    } else parts.push('⚠️ ' + f.name + '：未能识别类型，已跳过');
-  }
-  if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
-  Object.entries(execByDate).forEach(([date, rows]) => {
-    const ex = state.execSnaps.find(s => s.date === date);
-    if (ex) ex.rows = rows; else state.execSnaps.push({ date, rows });
+  const execFiles = [];
+  let teamGroups = null;
+  items.forEach(it => {
+    if (it.error) { parts.push('❌ ' + it.name + '：' + it.error); return; }
+    if (!it.kind) { parts.push('⚠️ ' + it.name + '：未能识别类型，已跳过'); return; }
+    const tag = it.project ? '·' + it.project : '';
+    if (it.kind === 'po') {
+      try {
+        const r = parsePoRows(it.rows);
+        asOf = Math.max(asOf, r.asOf);
+        poAll.push(...r.rows);
+        learnProjectAlias(r.rows, it.project);
+        parts.push('📄 ' + it.name + '（PO明细' + tag + '）：' + r.rows.length + ' 行');
+      } catch (err) { parts.push('❌ ' + it.name + '（PO明细）：' + err.message); }
+    } else if (it.kind === 'exec') {
+      if (!it.project) { parts.push('⚠️ ' + it.name + '（执行表）：不在花钱项目的子文件夹里，未导入——请放进对应项目的子文件夹'); return; }
+      try { execFiles.push({ name: it.name, project: it.project, date: it.snapDate, rows: parseExecRows(it.rows) }); }
+      catch (err) { parts.push('❌ ' + it.name + '（执行表）：' + err.message); }
+    } else if (it.kind === 'team') {
+      let persons = null;
+      if (it.sheets) { const r2 = parseTeamSheets(it.sheets); if (r2.groups.length) persons = r2.groups; }
+      if (!persons) persons = parseTeamTable(it.rows);
+      if (!persons.length) { parts.push('⚠️ ' + it.name + '（团队配置）：未识别到人员（需要 PO/OD 页签+姓名/单价列，或 类型/人数/单价 列）'); return; }
+      teamGroups = persons;
+      parts.push('👥 ' + it.name + '（团队配置）：' + sum(persons, g => g.headcount || 0) + ' 人 / ' + persons.length + ' 组已更新（以数据集为准）');
+    }
   });
-  if (Object.keys(execByDate).length) { state.execSnaps.sort((a, b) => a.date < b.date ? -1 : 1); touch('exec'); }
-  save();
-  return parts.join('\n');
+  if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); touch('team'); }
+  if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
+  const notes = [];
+  if (execFiles.length) {
+    execFiles.forEach(x => {
+      const ex = state.execSnaps.find(s => s.date === x.date);
+      if (ex) { ex.byProject = ex.byProject || {}; ex.byProject[x.project] = x.rows; }
+      else state.execSnaps.push({ date: x.date, byProject: { [x.project]: x.rows }, rows: {} });
+      parts.push('📄 ' + x.name + '（执行表·' + x.project + '）→ 快照 ' + x.date);
+    });
+    state.execSnaps.sort((a, b) => a.date < b.date ? -1 : 1);
+    const dates = execFiles.map(x => x.date);
+    notes.push(...rebuildMergedRows(dates), ...updateProjectPrints(execFiles));
+    touch('exec');
+  }
+  // 导入提醒（放错文件夹、缺项目等）：留在风险区，下次导入时替换
+  const dropped = items.filter(it => it.kind === 'exec' && !it.project);
+  dropped.forEach(it => notes.push('「' + it.name + '」（执行表）没有花钱项目归属，未导入——请把它放进对应花钱项目的子文件夹'));
+  state.importNotes = notes.map(text => ({ date: todayStr(), text }));
+  notes.forEach(n => parts.push('⚠️ ' + n));
+  return { text: parts.join('\n'), touched: !!(poAll.length || execFiles.length) };
+}
+// PO 明细行里的「IT项目名称/编码」→ 项目标识（子文件夹名）：从 PO 文件所在文件夹学到，取文件里出现最多的那个项目
+function learnProjectAlias(rows, project) {
+  if (!project || !rows.length) return;
+  const cnt = {};
+  rows.forEach(r => { if (r.itProject) cnt[r.itProject] = (cnt[r.itProject] || 0) + 1; });
+  const top = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+  if (!top) return;
+  state.projAlias = state.projAlias || {};
+  state.projAlias[top] = project;
+  const code = (rows.find(r => r.itProject === top && r.itProjectCode) || {}).itProjectCode;
+  if (code) state.projAlias[code] = project;
+}
+// 快照的合并视图 = 各花钱项目各自最新数据的合计（某次只导了一个项目，另一个沿用上一次）；旧版合并快照原样保留
+// dates：本次导入涉及的快照日期——只对这些快照出提醒（历史快照重建但不重复提醒）
+function rebuildMergedRows(dates) {
+  const warns = [];
+  const list = state.execSnaps;
+  const latest = {};
+  list.forEach((s, i) => {
+    if (!s.byProject || !Object.keys(s.byProject).length) return;
+    Object.assign(latest, s.byProject);
+    const merged = {};
+    Object.values(latest).forEach(rows => mergeExecRows(merged, rows));
+    const prev = list[i - 1], missing = [];
+    // 某个项目从未按项目导入过时，它在新快照里会整体缺失 → 先沿用上一份并提醒，避免余额凭空消失
+    if (prev && prev.rows) Object.entries(prev.rows).forEach(([c, o]) => {
+      if (!merged[c] && ((o.itw.avail || 0) + (o.od.avail || 0)) > 0) { merged[c] = JSON.parse(JSON.stringify(o)); missing.push(o.name || c); }
+    });
+    if (missing.length && dates && dates.indexOf(s.date) >= 0) warns.push('新快照（' + s.date + '）里缺少 ' + missing.join('、') + '，暂时沿用了上一份的数据——是否有一个花钱项目的执行表还没放进它的子文件夹？共享的预算项在补齐前余额会偏小');
+    s.rows = merged;
+  });
+  return warns;
+}
+// 各项目的「来源清单与可用预算」指纹 + 放反检查（只提醒）：新文件明显更像另一个项目时提示
+function availVec(rows) { const v = {}; Object.entries(rows).forEach(([c, o]) => { v[c] = (o.itw.avail || 0) + (o.od.avail || 0); }); return v; }
+function simVec(a, b) {
+  let num = 0, den = 0;
+  new Set(Object.keys(a).concat(Object.keys(b))).forEach(k => { num += Math.min(a[k] || 0, b[k] || 0); den += Math.max(a[k] || 0, b[k] || 0); });
+  return den ? num / den : 0;
+}
+function updateProjectPrints(execFiles) {
+  const warns = [];
+  const P = state.projPrints = state.projPrints || {};
+  execFiles.forEach(x => {
+    const v = availVec(x.rows);
+    let like = '', likeSim = 0;
+    Object.keys(P).forEach(p => { if (p === x.project) return; const s = simVec(v, P[p].avail); if (s > likeSim) { likeSim = s; like = p; } });
+    if (P[x.project] && like && likeSim - simVec(v, P[x.project].avail) >= 0.3 && likeSim >= 0.6)
+      warns.push('「' + x.project + '」文件夹里的执行表（' + x.name + '）更像「' + like + '」的——疑似放反。如是，把文件挪到另一个文件夹后重新导入即可覆盖');
+    else P[x.project] = { date: x.date, avail: v };   // 疑似放反时不更新指纹，提醒会一直保留到纠正
+  });
+  return warns;
 }
 async function openDataFile() {
   if (window.showOpenFilePicker) {
@@ -496,14 +614,18 @@ function defaultYearParams() {
 function defaultState() {
   const y = new Date().getFullYear();
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     meta: { year: y, updateFreqDays: 14 },
     years: { [y]: defaultYearParams() },
-    plans: [],          // {id, year, code, name, amountUsd, note}  code 可空，平台授予后关联
+    plans: [],          // {id, year, code, name, amountW, target, planProject, dead, note}  code 可空，平台授予后关联
     grantLogs: [],      // {date, code, amountCny, note}      授予流水（辅助，按日期自然分年）
     team: [],           // {id, kind:'po'|'od', name, headcount, rate, project}  团队配置（跨年沿用）
-    execSnaps: [],      // {date, rows: ...}                   执行表快照（按日期自然分年）
+    execSnaps: [],      // {date, rows, byProject}  rows=按预算来源合并的视图；byProject[项目标识]=该项目原始行（v4）
     poDataByYear: {},   // {2026: {updatedAt, asOf, rows:[...]}}
+    projAlias: {},      // PO 明细的「IT项目名称/编码」→ 项目标识（数据集子文件夹名）
+    projPrints: {},     // 各项目的来源清单指纹（放反检查用）
+    importLogs: [],     // 每次导入时的决策快照与回测
+    importNotes: [],    // 最近一次导入的提醒（放错文件夹等）
     updatedAt: {}
   };
 }
@@ -512,7 +634,7 @@ function migrate(old) {
   if (old && old.schemaVersion === 2) {
     try { localStorage.setItem('budgetDash.backup.v2', JSON.stringify(old)); } catch (e) { }
     const y = (old.meta && old.meta.year) || new Date().getFullYear();
-    return {
+    old = {
       schemaVersion: 3,
       meta: { year: y, updateFreqDays: (old.meta && old.meta.updateFreqDays) || 14 },
       years: { [y]: { fxRate: (old.meta && old.meta.fxRate) || 7.03, execRateTarget: (old.meta && old.meta.execRateTarget) || 0.95, bonusMonths: (old.meta && old.meta.bonusMonths) || 3.5, attendFactor: (old.meta && old.meta.attendFactor) != null ? old.meta.attendFactor : 1, workdays: (old.meta && old.meta.workdays) || {}, lastHcCheck: (old.meta && old.meta.lastHcCheck) || '' } },
@@ -524,7 +646,26 @@ function migrate(old) {
       updatedAt: old.updatedAt || {}
     };
   }
-  return null;
+  // v3 → v4：执行表按花钱项目分存（旧快照保留合并视图，下次导入后自动具备项目维度）；其余只是补字段
+  if (old && old.schemaVersion === 3) {
+    try { localStorage.setItem('budgetDash.backup.v3', JSON.stringify(old)); } catch (e) { }
+    old.schemaVersion = 4;
+  }
+  return (old && old.schemaVersion === 4) ? old : null;
+}
+function ensureV4(st) {   // v4 新增字段的缺省值（旧数据、旧分享包载入时补齐）
+  if (!st) return st;
+  if (!st.projPrints || typeof st.projPrints !== 'object') st.projPrints = {};
+  if (!st.projAlias || typeof st.projAlias !== 'object') st.projAlias = {};
+  if (!Array.isArray(st.importLogs)) st.importLogs = [];
+  if (!Array.isArray(st.importNotes)) st.importNotes = [];
+  return st;
+}
+// 任意旧版本 → 当前版本（v4）；不认识的格式返回 null
+function upToV4(obj) {
+  let o = obj;
+  while (o && typeof o.schemaVersion === 'number' && o.schemaVersion < 4) { const m = migrate(o); if (!m) return null; o = m; }
+  return o && o.schemaVersion === 4 ? ensureV4(o) : null;
 }
 function load() {
   const autobak = obj => {   // 迁移/归一化前自动备份原始数据（防升级毁数据，可手动恢复）
@@ -556,9 +697,7 @@ function load() {
     }
   };
   if (SHARE_MODE) {           // 分享模式：只读快照，不读写本机存储
-    state = SHARE_PKG.state;
-    if (state && state.schemaVersion === 2) { const m = migrate(state); if (m) state = m; }
-    if (!state || state.schemaVersion !== 3) state = defaultState();
+    state = upToV4(SHARE_PKG.state) || defaultState();
     normalizePlans(state);
     normalizeTeam(state);
     return;
@@ -566,9 +705,7 @@ function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
-      let obj = JSON.parse(raw);
-      while (obj && obj.schemaVersion < 3) { const m = migrate(obj); if (!m) { obj = null; break; } obj = m; }
-      state = obj && obj.schemaVersion === 3 ? obj : defaultState();
+      state = upToV4(JSON.parse(raw)) || defaultState();
       if (state && state.plans) normalizePlans(state);
       if (state && state.team) normalizeTeam(state);
     } else {
@@ -697,6 +834,7 @@ function parsePoRows(rows) {
     else if (/费用起始/.test(h)) col.startDate = i;
     else if (/费用结束/.test(h)) col.endDate = i;
     else if (/^PO金额/.test(h)) col.amount = i;
+    else if (/IT项目编码/.test(h)) col.itProjectCode = i;
     else if (/IT项目名称/.test(h)) col.itProject = i;
     else if (/^项目编码$/.test(h)) col.budgetCode = i;
     else if (/^项目名称$/.test(h)) col.budgetName = i;
@@ -710,7 +848,7 @@ function parsePoRows(rows) {
   const out = [];
   // 平台导出的 PO 级列（编号/名称/状态/起止/金额/项目）常为纵向合并单元格：
   // 仅首行有值、后续行为空 → 向下填充；金额被填充的行打标记（按 PO 计金额而非按行累加）
-  const FILL = ['resNo', 'resName', 'poNo', 'status', 'startDate', 'endDate', 'amount', 'itProject'];
+  const FILL = ['resNo', 'resName', 'poNo', 'status', 'startDate', 'endDate', 'amount', 'itProject', 'itProjectCode'];
   const last = {};
   rows.slice(1).forEach(r => {
     let amtFilled = false;
@@ -731,6 +869,7 @@ function parsePoRows(rows) {
       amount: parseMoney(col.amount != null ? r[col.amount] : '') || 0,
       amtFilled,
       itProject: col.itProject != null ? String(r[col.itProject] == null ? '' : r[col.itProject]).trim() : '',
+      itProjectCode: col.itProjectCode != null ? String(r[col.itProjectCode] == null ? '' : r[col.itProjectCode]).trim() : '',
       budgetCode: col.budgetCode != null ? String(r[col.budgetCode]).trim() : '',
       months
     });
@@ -801,8 +940,8 @@ function mergeExecRows(target, add) {
 /* ================= 导入会话 ================= */
 let importCtx = null;
 function importModal() {
-  openModal('<h3>导入平台数据（4 个文件）</h3>' +
-    '<div class="muted">把本月导出的 <b>PO明细 ×2 + 预算执行 ×2</b>（每个花钱项目各一份，.xlsx/.csv）<b>一次全选拖入</b>——也可以把 4 个文件放一个文件夹里<b>直接拖文件夹</b>。自动识别类型：执行表按快照日期合并成一个时间点；PO明细覆盖式刷新。按年全量导出，可放心重复导入。</div>' +
+  openModal('<h3>导入平台数据</h3>' +
+    '<div class="muted">日常用「数据集文件夹」自动导入即可（<b>每个花钱项目一个子文件夹</b>，文件丢进去打开看板就导）。这里手动拖入时：<b>拖整个文件夹</b>按子文件夹名识别花钱项目；拖散文件时，执行表要在下面指定属于哪个花钱项目（PO 明细和团队表不用）。自动识别类型，按年全量导出，可放心重复导入。</div>' +
     '<div class="dropzone" id="dropZone">拖拽文件到此处，或 <button class="btn small" data-action="import:pick">选择文件</button>' +
     '<input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv" style="display:none"></div>' +
     '<div id="fileList"></div>' +
@@ -815,15 +954,16 @@ function importModal() {
   $('#fileInput').addEventListener('change', async e => { await handleFiles(e.target.files); e.target.value = ''; });
   renderImportList();
 }
-function walkEntry(entry, out) {
+// 拖拽：拖文件夹时一级子文件夹名 = 花钱项目；直接拖某个项目的文件夹时，该文件夹名就是项目
+function walkEntry(entry, out, proj, top) {
   return new Promise(res => {
     if (!entry) return res();
-    if (entry.isFile) entry.file(f => { if (/\.(xlsx|xls|csv)$/i.test(f.name)) out.push(f); res(); }, () => res());
+    if (entry.isFile) entry.file(f => { if (/\.(xlsx|xls|csv)$/i.test(f.name)) out.push({ file: f, project: proj || '' }); res(); }, () => res());
     else if (entry.isDirectory) {
       const reader = entry.createReader();
       const readBatch = () => reader.readEntries(async es => {
         if (!es.length) return res();
-        await Promise.all(es.map(x2 => walkEntry(x2, out)));
+        await Promise.all(es.map(x2 => walkEntry(x2, out, top ? '' : (proj || x2.name), false)));
         readBatch();
       }, () => res());
       readBatch();
@@ -834,21 +974,28 @@ async function handleDrop(dt) {
   const files = [];
   const items = dt && dt.items ? Array.from(dt.items) : [];
   const entries = items.map(i => (typeof i.webkitGetAsEntry === 'function' ? i.webkitGetAsEntry() : null)).filter(Boolean);
-  if (entries.length) { await Promise.all(entries.map(en => walkEntry(en, files))); }
-  else if (dt && dt.files) { for (const f of dt.files) if (/\.(xlsx|xls|csv)$/i.test(f.name)) files.push(f); }
+  for (const en of entries) {
+    const sub = [];
+    await walkEntry(en, sub, '', true);
+    // 直接拖进来的是一个项目文件夹（文件都在它的根下）→ 文件夹名就是项目
+    if (en.isDirectory && sub.length && sub.every(x => !x.project)) sub.forEach(x => { x.project = en.name; });
+    files.push(...sub);
+  }
+  if (!entries.length && dt && dt.files) { for (const f of dt.files) if (/\.(xlsx|xls|csv)$/i.test(f.name)) files.push({ file: f, project: '' }); }
   if (files.length) await handleFiles(files);
 }
 async function handleFiles(list) {
-  list = Array.from(list).filter(f => /\.(xlsx|xls|csv)$/i.test(f.name));
-  for (const f of list) {
+  list = Array.from(list).filter(x => /\.(xlsx|xls|csv)$/i.test(x && x.file ? x.file.name : (x && x.name) || ''));
+  for (const x of list) {
+    const f = x && x.file ? x.file : x, project = (x && x.project) || '';
     try {
       const rows = await parseWorkbookFile(f);
-      if (!rows.length) { importCtx.files.push({ name: f.name, error: '空文件' }); continue; }
-      const rec = { name: f.name, kind: detectKind(rows), rows, file: f };
+      if (!rows.length) { importCtx.files.push({ name: f.name, project, error: '空文件' }); continue; }
+      const rec = { name: f.name, project, kind: detectKind(rows), rows, file: f };
       if (rec.kind === 'team') { try { rec.sheets = await parseAllSheets(f); } catch (e) { } }
       importCtx.files.push(rec);
     } catch (err) {
-      importCtx.files.push({ name: f.name, error: '解析失败：' + err.message + (/\.xls$/i.test(f.name) ? '（.xls 请先另存为 .xlsx）' : '') });
+      importCtx.files.push({ name: f.name, project, error: '解析失败：' + err.message + (/\.xls$/i.test(f.name) ? '（.xls 请先另存为 .xlsx）' : '') });
     }
   }
   renderImportList();
@@ -857,14 +1004,18 @@ function renderImportList() {
   const el = $('#fileList');
   if (!importCtx || !importCtx.files.length) { el.innerHTML = '<div class="muted" style="text-align:center;padding:6px 0">尚未添加文件</div>'; return; }
   const hasExec = importCtx.files.some(f => f.kind === 'exec');
+  const projOpts = knownProjects();
+  const projCell = (f, fi) => !f.project
+    ? '<span class="muted">花钱项目：</span><input list="projList" data-fproj="' + fi + '" value="" placeholder="填子文件夹名/项目名" style="font-size:12px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;width:130px">'
+    : '<span class="chip">' + esc(f.project) + '</span>';
   el.innerHTML =
-    (hasExec ? '<div class="file-head"><span class="muted">执行表快照日期：</span><input type="date" id="snapDate" value="' + esc(importCtx.snapDate) + '"></div>' : '') +
+    (hasExec ? '<div class="file-head"><span class="muted">执行表快照日期：</span><input type="date" id="snapDate" value="' + esc(importCtx.snapDate) + '"></div><datalist id="projList">' + projOpts.map(p => '<option value="' + esc(p) + '">').join('') + '</datalist>' : '') +
     importCtx.files.map((f, fi) =>
       '<div class="file-card"><div class="file-head"><b>' + esc(f.name) + '</b>' +
       (f.error ? '<span style="color:var(--red);font-size:12px">' + esc(f.error) + '</span>'
         : '<select data-fkind="' + fi + '">' +
         [['', '— 请选择类型 —'], ['po', 'PO 明细'], ['exec', '预算执行表'], ['team', '团队配置']].map(([v, l]) => '<option value="' + v + '"' + (f.kind === v ? ' selected' : '') + '>' + l + '</option>').join('') +
-        '</select><span class="muted">' + (f.rows ? f.rows.length + ' 行（含表头）' : '') + '</span>') +
+        '</select>' + ((f.kind === 'exec' || f.kind === 'po') ? projCell(f, fi) : '') + '<span class="muted">' + (f.rows ? f.rows.length + ' 行（含表头）' : '') + '</span>') +
       '</div>' +
       (f.error ? '' : f.kind === 'po' ? poDiagnose(f) : f.kind === 'exec' ? execDiagnose(f) : f.kind === 'team' ? teamDiagnose(f) : '') +
       '</div>').join('');
@@ -910,45 +1061,16 @@ function execDiagnose(f) {
 }
 async function importAll() {
   if (!importCtx || !importCtx.files.length) { alert('请先添加文件'); return; }
-  const parts = [];
-  const poAll = []; let asOf = 0;
-  const execMerged = {}; let execCnt = 0;
+  const bad = importCtx.files.find(f => f.error || !f.kind);
+  if (bad) { alert('有文件未能识别，请先处理：\n' + (bad.error || bad.name + ' 未选择类型')); return; }
+  const noProj = importCtx.files.find(f => f.kind === 'exec' && !(f.project || '').trim());
+  if (noProj) { alert('执行表「' + noProj.name + '」还没有指定花钱项目——执行表没有项目列，请在文件旁填写它属于哪个花钱项目（子文件夹名）。'); return; }
   const snapDate = ($('#snapDate') && $('#snapDate').value) || importCtx.snapDate || todayStr();
-  let teamGroups = null;
-  for (const f of importCtx.files) {
-    if (f.error || !f.kind) return;
-    if (f.kind === 'po') {
-      const { asOf: a, rows } = parsePoRows(f.rows);
-      asOf = Math.max(asOf, a);
-      poAll.push(...rows);
-      parts.push('📄 ' + f.name + '（PO明细）：' + rows.length + ' 行');
-    } else if (f.kind === 'exec') {
-      mergeExecRows(execMerged, parseExecRows(f.rows));
-      execCnt++;
-      parts.push('📄 ' + f.name + '（执行表）：已合并');
-    } else if (f.kind === 'team') {
-      let persons = null;
-      if (f.sheets) { const r2 = parseTeamSheets(f.sheets); if (r2.groups.length) persons = r2.groups; }
-      if (!persons) persons = parseTeamTable(f.rows);
-      teamGroups = persons;
-      const pN = sum(persons, g => g.headcount || 0);
-      parts.push('👥 ' + f.name + '（团队配置）：' + pN + ' 人 / ' + persons.length + ' 组');
-    }
-  }
-  if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); touch('team'); }
-  if (poAll.length) {
-    state.poDataByYear = state.poDataByYear || {};
-    state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll };
-    touch('po');
-  }
-  if (execCnt) {
-    const exist = state.execSnaps.find(s => s.date === snapDate);
-    if (exist) exist.rows = execMerged; else state.execSnaps.push({ date: snapDate, rows: execMerged });
-    state.execSnaps.sort((a, b) => a.date < b.date ? -1 : 1);
-    touch('exec');
-  }
+  const items = importCtx.files.map(f => ({ name: f.name, kind: f.kind, rows: f.rows, sheets: f.sheets, project: (f.project || '').trim(), snapDate }));
+  const r = importParsed(items);
+  if (r.touched) recordImportLog(calc());
   save(); closeModal();
-  alert('导入完成：\n\n' + parts.join('\n') + (poAll.length || execCnt ? '\n\n所有指标已自动重算。' : ''));
+  alert('导入完成：\n\n' + r.text + (r.touched ? '\n\n所有指标已自动重算。' : ''));
 }
 
 /* ================= 计算引擎 ================= */
@@ -974,20 +1096,33 @@ function calc() {
   const Y = curYear();
   const m = yearParams(Y), fx = m.fxRate;
   const plansY = plansOf(Y);
-  const snaps = [...(state.execSnaps || [])].filter(s => inYear(s.date, Y)).sort((a, b) => a.date < b.date ? -1 : 1);
+  const byDate = (a, b) => a.date < b.date ? -1 : 1;
+  const snaps = [...(state.execSnaps || [])].filter(s => inYear(s.date, Y)).sort(byDate);
   const snap = snaps[snaps.length - 1] || null;
   const po = poOf(Y);
+  const excl = m.excluded || [];
+  // 挂靠剔除按 PO 编号整张生效（一张 PO 可跨项目）；兼容旧数据的「编号|项目」写法
+  const exclPosSet = new Set((m.excludedPos || []).map(k => String(k).split('|')[0]));
 
-  // 规划关联
+  /* ---- 花钱项目与钱包：项目标识 = 数据集子文件夹名；执行表按项目各取最新一份 ---- */
+  const projLatest = {};
+  snaps.forEach(s => Object.entries(s.byProject || {}).forEach(([p, rows]) => { projLatest[p] = { date: s.date, rows }; }));
+  const projects = Object.keys(projLatest).sort();
+  const hasProj = projects.length > 0;
+  const alias = state.projAlias || {};   // PO 明细的「IT项目名称/编码」→ 项目标识（导入时从 PO 文件所在文件夹学到）
+  const projOfRow = r => {
+    const n = r.itProject || '', cd = r.itProjectCode || '';
+    const hit = alias[n] || alias[cd] || (projLatest[n] ? n : '') || (projLatest[cd] ? cd : '');
+    return hit || (projects.length === 1 ? projects[0] : '');
+  };
+
+  /* ---- 规划关联与汇总（预算来源视角：跨项目合并） ---- */
   const planByCode = {};
   plansY.forEach(p => { if (p.code) planByCode[p.code] = p; });
-  const excl = m.excluded || [];
   const codes = snap ? Object.keys(snap.rows).filter(c => excl.indexOf(c) < 0) : [];
   const unmatched = codes.filter(c => !planByCode[c]);
-
-  // 汇总
   const planCnyTotal = sum(plansY.filter(p => !p.dead), p => wusdOf(p) * 10000 * fx);
-  let itwExec = 0, odExec = 0, availTotal = 0, itwFc = 0, remainTotal = 0;
+  let itwExec = 0, odExec = 0, availTotal = 0, itwFc = 0, remainTotal = 0, odRemainTotal = 0;
   const per = {};
   codes.forEach(c => {
     const r = snap.rows[c];
@@ -996,55 +1131,100 @@ function calc() {
     const ie = r.itw.exec || 0, oe = r.od.exec || 0;
     const av = (r.itw.avail || 0) + (r.od.avail || 0);
     const rm = (r.itw.remain || 0) + (r.od.remain || 0);
-    itwExec += ie; odExec += oe; availTotal += av; itwFc += (r.itw.fc || 0); remainTotal += rm;
+    itwExec += ie; odExec += oe; availTotal += av; itwFc += (r.itw.fc || 0); remainTotal += rm; odRemainTotal += (r.od.remain || 0);
     const tgt = (p && p.target != null) ? p.target : m.execRateTarget;
-    per[c] = { code: c, name: r.name, plan: p, planCny, itwExec: ie, odExec: oe, exec: ie + oe, avail: av, remain: rm, itwFc: r.itw.fc || 0, itwRemain: r.itw.remain || 0, odAvail: r.od.avail || 0, execRate: planCny ? (ie + oe) / planCny : null, target: tgt, targetInherit: !(p && p.target != null) };
+    // 钱包 = 预算来源 × 花钱项目。旧的合并快照没有项目维度时，余额归入「未区分项目」这一个钱包
+    const byProj = {};
+    projects.forEach(pk => {
+      const o = projLatest[pk].rows[c];
+      if (o) byProj[pk] = { itwRemain: o.itw.remain || 0, odRemain: o.od.remain || 0, itwAvail: o.itw.avail || 0, odAvail: o.od.avail || 0 };
+    });
+    if (!hasProj) byProj[''] = { itwRemain: r.itw.remain || 0, odRemain: r.od.remain || 0, itwAvail: r.itw.avail || 0, odAvail: r.od.avail || 0 };
+    per[c] = { code: c, name: r.name, plan: p, planCny, itwExec: ie, odExec: oe, exec: ie + oe, avail: av, remain: rm, itwFc: r.itw.fc || 0, itwRemain: r.itw.remain || 0, odRemain: r.od.remain || 0, odAvail: r.od.avail || 0, byProj, execRate: planCny ? (ie + oe) / planCny : null, target: tgt, targetInherit: !(p && p.target != null) };
   });
   const execTotal = itwExec + odExec;
   const execRate = planCnyTotal > 0 ? execTotal / planCnyTotal : null;
+  // 总体目标 = 各来源目标的加权值（不考核的按 0 计）
+  const tgtOf = p => (p && p.target != null) ? p.target : m.execRateTarget;
+  let weightedTarget = null;
+  {
+    const tp = plansY.filter(p => !p.dead && wusdOf(p) > 0);
+    const tot = sum(tp, p => wusdOf(p) * 10000 * fx);
+    if (tot > 0) weightedTarget = sum(tp, p => wusdOf(p) * 10000 * fx * tgtOf(p)) / tot;
+  }
 
-  // 时间进度
+  /* ---- 时间进度 ---- */
   const now = new Date(), y0 = new Date(Y, 0, 1), y1 = new Date(Y + 1, 0, 1);
   let timeProg = 1;
   if (now < y0) timeProg = 0; else if (now < y1) timeProg = (now - y0) / (y1 - y0);
   const curM = now.getFullYear() === Y ? now.getMonth() + 1 : (now.getFullYear() > Y ? 13 : 0);
 
-  // PO 月度（实际：m < asOf；预测：m >= asOf）
-  const poMonthlyAct = {}, poMonthlyFc = {}, poActByCode = {};
-  let poFrozen = 0, poReturn = 0, openCnt = 0;
-  const exclPosSet = new Set(m.excludedPos || []);
-  const poKey = r => r.poNo + '|' + (r.itProject || '');
-  // 两级剔除：预算来源级（连执行一起剔）+ PO级（挂靠：只剔你的PO管理，执行仍按平台口径计入执行率）
-  const poList = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && !exclPosSet.has(poKey(r))) : [];
-  const poExcludedRows = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && exclPosSet.has(poKey(r))) : [];
+  /* ---- 工作日（官方精确表 → 推算引擎；可逐月覆盖） ---- */
+  const wdDefaultY = (yy, mo) => {
+    const p2 = v => String(v).padStart(2, '0');
+    const exact = HOLIDAYS[yy];
+    const d = new Date(yy, mo - 1, 1); let n = 0;
+    if (exact) {   // 官方精确安排（含调休上班）
+      const off = new Set(exact.off.filter(x => +x.slice(0, 2) === mo));
+      const work = new Set(exact.work.filter(x => +x.slice(0, 2) === mo));
+      while (d.getMonth() === mo - 1) {
+        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
+        if (w >= 1 && w <= 5) { if (!off.has(key)) n++; }
+        else if (work.has(key)) n++;
+        d.setDate(d.getDate() + 1);
+      }
+    } else {      // 推算：周中 − 节假日（不预知调休上班）
+      const off = estHolidaySet(yy);
+      while (d.getMonth() === mo - 1) {
+        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
+        if (w >= 1 && w <= 5 && !off.has(key)) n++;
+        d.setDate(d.getDate() + 1);
+      }
+    }
+    return n;
+  };
+  const workdays = mo => { const v = m.workdays && m.workdays[mo]; return (v != null && v !== '' && !Number.isNaN(+v)) ? +v : wdDefaultY(Y, mo); };
+  const janWd = wdDefaultY(Y + 1, 1);   // 1 月 PO 属于明年，用明年的日历
+
+  /* ---- 团队理论值 ---- */
+  const team = state.team || [];
+  const poGroups = team.filter(g => g.kind === 'po' && (g.headcount || 0) > 0);
+  const odGroups = team.filter(g => g.kind === 'od' && (g.headcount || 0) > 0);
+  const attend = m.attendFactor != null ? m.attendFactor : 1;
+  const poDaily = sum(poGroups, g => g.headcount * (g.rate || 0));
+  const theoryOd = sum(odGroups, g => g.headcount * (g.rate || 0));
+  const theoryPo = mo => poDaily * workdays(mo) * attend;
+
+  /* ---- PO：PO 级字段按 PO 编号只取一次；行级（月度执行/预测）相加 ----
+     info: s=所属月（费用起始月）, E=已执行, C=所属月内的预测, B=超出所属月的预测 */
+  const asOf = po ? po.asOf : 13;
+  const poList = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && !exclPosSet.has(r.poNo)) : [];
+  const poExcludedRows = po ? po.rows.filter(r => excl.indexOf(r.budgetCode) < 0 && exclPosSet.has(r.poNo)) : [];
   const poExclActByCode = {};
   let poExclAct = 0;
   poExcludedRows.forEach(r => {
-    const a = sum(Object.entries(r.months), ([mm, v]) => +mm < po.asOf ? v : 0);
+    const a = sum(Object.entries(r.months), ([mm, v]) => +mm < asOf ? v : 0);
     poExclActByCode[r.budgetCode] = (poExclActByCode[r.budgetCode] || 0) + a;
     poExclAct += a;
   });
-  const poAgg = {};   // 同一 PO 可能拆成多行（多个预算来源）：金额是 PO 级合并值，只算一次
+  const poMonthlyAct = {}, poMonthlyFc = {}, poActByCode = {};
+  const byPo = {};         // PO 编号 → PO 级汇总
+  const info = new Map();  // PO 行 → 拆分结果
   poList.forEach(r => {
-    const act = sum(Object.entries(r.months), ([mm, v]) => +mm < (po ? po.asOf : 13) ? v : 0);
-    const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= (po ? po.asOf : 13) ? v : 0);
-    // 预计返还 = 超出所属月（费用起始月）的预测：所属月内的预测即将执行掉，不算返还
-    const startM = r.startDate ? +String(r.startDate).slice(5, 7) : 0;
-    const refund = sum(Object.entries(r.months), ([mm, v]) => (+mm >= (po ? po.asOf : 13) && +mm > startM) ? v : 0);
+    const s = r.startDate ? +r.startDate.slice(5, 7) : asOf;   // 费用起始缺失：按当月在执行处理
+    const inf = { s, noStart: !r.startDate, E: 0, C: 0, B: 0, w: 0, frozen: 0, refund: 0, willExec: 0 };
     Object.entries(r.months).forEach(([mm, v]) => {
       const mi = +mm;
-      if (mi < po.asOf) { poMonthlyAct[mi] = (poMonthlyAct[mi] || 0) + v; poActByCode[r.budgetCode] = (poActByCode[r.budgetCode] || 0) + v; }
-      else poMonthlyFc[mi] = (poMonthlyFc[mi] || 0) + v;
+      if (mi < asOf) { poMonthlyAct[mi] = (poMonthlyAct[mi] || 0) + v; poActByCode[r.budgetCode] = (poActByCode[r.budgetCode] || 0) + v; inf.E += v; }
+      else { poMonthlyFc[mi] = (poMonthlyFc[mi] || 0) + v; if (mi === s) inf.C += v; else inf.B += v; }
     });
-    const key = r.poNo + '|' + (r.itProject || '');
-    const g = poAgg[key] = poAgg[key] || { amount: 0, amountSum: 0, act: 0, fc: 0, refund: 0, status: r.status, amtFilled: false };
-    g.amountSum += r.amount || 0;
-    g.amtFilled = g.amtFilled || !!r.amtFilled;
-    g.amount = g.amtFilled ? Math.max(g.amount, r.amount || 0) : g.amountSum;
-    g.act += act; g.fc += fc; g.refund += refund; g.status = r.status;
-  });
-  Object.values(poAgg).forEach(g => {
-    if (g.status === 'OPEN') { openCnt++; poFrozen += Math.max(g.amount - g.act, 0); poReturn += g.refund; }
+    info.set(r, inf);
+    const g = byPo[r.poNo] = byPo[r.poNo] || { poNo: r.poNo, resName: r.resName, status: r.status, startDate: r.startDate, amount: 0, E: 0, rows: [] };
+    g.amount = Math.max(g.amount, r.amount || 0);   // PO 金额是 PO 口径（每行重复同一个数）→ 只取一次，不能相加
+    g.E += inf.E; g.status = r.status;
+    if (!g.startDate) g.startDate = r.startDate;
+    if (!g.resName) g.resName = r.resName;
+    g.rows.push(r);
   });
 
   // OD 月度历史（执行表快照差值）
@@ -1065,110 +1245,320 @@ function calc() {
   const odMonths = snaps.length ? Math.max(+(snaps[snaps.length - 1].date.slice(5, 7)) - 1, 1) : 1;
   const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (odExec > 0 ? odExec / odMonths : 0);
 
-  // 工作日（默认周末法，可逐月覆盖）
-  const wdDefault = mo => {
-    const p2 = v => String(v).padStart(2, '0');
-    const exact = HOLIDAYS[Y];
-    const d = new Date(Y, mo - 1, 1); let n = 0;
-    if (exact) {   // 官方精确安排（含调休上班）
-      const off = new Set(exact.off.filter(x => +x.slice(0, 2) === mo));
-      const work = new Set(exact.work.filter(x => +x.slice(0, 2) === mo));
-      while (d.getMonth() === mo - 1) {
-        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
-        if (w >= 1 && w <= 5) { if (!off.has(key)) n++; }
-        else if (work.has(key)) n++;
-        d.setDate(d.getDate() + 1);
-      }
-    } else {      // 推算：周中 − 节假日（不预知调休上班，年误差约2~4天）
-      const off = estHolidaySet(Y);
-      while (d.getMonth() === mo - 1) {
-        const w = d.getDay(), key = p2(mo) + '-' + p2(d.getDate());
-        if (w >= 1 && w <= 5 && !off.has(key)) n++;
-        d.setDate(d.getDate() + 1);
-      }
-    }
-    return n;
-  };
-  const workdays = mo => { const v = m.workdays && m.workdays[mo]; return (v != null && v !== '' && !Number.isNaN(+v)) ? +v : wdDefault(mo); };
-
-  // 团队配置理论值
-  const team = state.team || [];
-  const poGroups = team.filter(g => g.kind === 'po' && (g.headcount || 0) > 0);
-  const odGroups = team.filter(g => g.kind === 'od' && (g.headcount || 0) > 0);
-  const attend = m.attendFactor != null ? m.attendFactor : 1;
-  const poDaily = sum(poGroups, g => g.headcount * (g.rate || 0));
-  const theoryOd = sum(odGroups, g => g.headcount * (g.rate || 0));
-  const theoryPo = mo => poDaily * workdays(mo) * attend;
-
-  // PO 历史月均（近 3 个非零实际月，供兜底与校准）
-  const poHist = Object.entries(poMonthlyAct).filter(([mo, v]) => v > 0 && +mo < (po ? po.asOf : 13)).sort((a, b) => +a[0] - +b[0]);
+  /* ---- 团队需求：PO 理论 × 校准系数（B主A兜底：没有团队配置时用历史月均 × 工作日修正） ---- */
+  const poHist = Object.entries(poMonthlyAct).filter(([mo, v]) => v > 0 && +mo < asOf).sort((a, b) => +a[0] - +b[0]);
   const poLast3 = poHist.slice(-3);
   const poAvg = poLast3.length ? sum(poLast3, ([, v]) => v) / poLast3.length : 0;
-  const poAvgWd = poLast3.length ? sum(poLast3, ([mo]) => workdays(+mo)) / poLast3.length : workdays(Math.max(curM, 1));
-
-  // OD 未来估算：团队理论或历史月均；6月×2（上半年清算）、12月×bonusMonths（全年+年终奖）
-  // 年度未开始（查看未来年）时不做任何预测
-  const started = curM >= 1;
-  const odBase = odGroups.length ? theoryOd : odAvg;
-  const odEst = {};
-  const poEst = {};
-  if (started) {
-    for (let mo = curM; mo <= 12; mo++) odEst[mo] = mo === 6 ? odBase * 2 : mo === 12 ? odBase * (m.bonusMonths || 3.5) : odBase;
-    for (let mo = curM; mo <= 12; mo++) {
-      const fc = poMonthlyFc[mo] || 0;
-      const th = poGroups.length ? theoryPo(mo) : 0;
-      const hist = poAvg > 0 && poAvgWd > 0 ? poAvg * workdays(mo) / poAvgWd : 0;
-      poEst[mo] = Math.max(fc, th, hist);
-    }
+  const poAvgWd = poLast3.length ? sum(poLast3, ([mo]) => workdays(+mo)) / poLast3.length : workdays(Math.max(Math.min(curM, 12), 1));
+  let calibR = 1;
+  if (poGroups.length && poLast3.length >= 3) {
+    const a = sum(poLast3, ([, v]) => v), th = sum(poLast3, ([mo]) => theoryPo(+mo));
+    if (th > 0) calibR = Math.min(1.1, Math.max(0.9, a / th));
   }
-  const odFuture = sum(Object.entries(odEst), ([, v]) => v);
+  const needPo = mo => poGroups.length ? theoryPo(mo) * calibR : (poAvg > 0 && poAvgWd > 0 ? poAvg * workdays(mo) / poAvgWd : 0);
+  const needJan = poGroups.length ? poDaily * janWd * attend * calibR : (poAvg > 0 && poAvgWd > 0 ? poAvg * janWd / poAvgWd : 0);
+
+  /* ---- 在途 PO 三类：当月在执行（按团队需求拆成将执行/多下）、往月剩余（全部返还）、已提前下的 ---- */
+  const started = curM >= 1 && curM <= 12;
+  const teamNeedAsOf = needPo(asOf);
+  const curFc = sum(poList, r => { const i = info.get(r); return i.s === asOf ? i.C : 0; });
+  const kNeed = (curFc > 0 && teamNeedAsOf > 0) ? Math.min(1, teamNeedAsOf / curFc) : 1;
+  Object.values(byPo).forEach(g => {
+    g.willExec = sum(g.rows, r => { const i = info.get(r); return i.s === asOf ? i.C * kNeed : (i.s > asOf ? i.C : 0); });
+    if (g.status !== 'OPEN') { g.frozen = 0; g.refund = 0; }
+    else if (g.amount > 0) { g.frozen = Math.max(g.amount - g.E, 0); g.refund = Math.max(g.frozen - g.willExec, 0); }
+    else { g.frozen = g.rows.reduce((a, r) => a + info.get(r).C + info.get(r).B, 0); g.refund = g.frozen - g.willExec; }   // 没有 PO 金额列时退回按预测估
+    // 冻结/返还分到各行（= 各钱包）：往月 PO 以「超出所属月的预测」为权重，当月/提前下的以所属月内预测为权重；整张 PO 都没有预测时才用已执行额
+    let W = sum(g.rows, r => { const i = info.get(r); i.w = i.s < asOf ? i.B : i.C; return i.w; });
+    if (W <= 0) W = sum(g.rows, r => { const i = info.get(r); i.w = i.E; return i.w; });
+    g.rows.forEach(r => { const i = info.get(r); const sh = W > 0 ? i.w / W : 1 / g.rows.length; i.frozen = g.frozen * sh; i.refund = g.refund * sh; i.willExec = i.frozen - i.refund; });
+    g.detail = g.rows.map(r => { const i = info.get(r); return { code: r.budgetCode, name: per[r.budgetCode] ? per[r.budgetCode].name : (r.budgetCode || '—'), proj: projOfRow(r), E: i.E, frozen: i.frozen, willExec: i.willExec, refund: i.refund }; });
+  });
+  let poFrozen = 0, poReturn = 0, openCnt = 0;
+  Object.values(byPo).forEach(g => { if (g.status === 'OPEN') { openCnt++; poFrozen += g.frozen; poReturn += g.refund; } });
+  const willExecByCode = {}, refundByCode = {}, issuedByMonth = {}, wallets = {}, refundPastByCode = {}, refundPastW = {};
+  poList.forEach(r => {
+    const i = info.get(r), c = r.budgetCode, p = projOfRow(r), g = byPo[r.poNo];
+    willExecByCode[c] = (willExecByCode[c] || 0) + i.willExec;
+    refundByCode[c] = (refundByCode[c] || 0) + i.refund;
+    if (i.s > asOf) issuedByMonth[i.s] = (issuedByMonth[i.s] || 0) + i.C;
+    const key = c + '|' + p;
+    if (g.status === 'OPEN' && i.s < asOf) { refundPastByCode[c] = (refundPastByCode[c] || 0) + i.refund; refundPastW[key] = (refundPastW[key] || 0) + i.refund; }   // 往月 PO 的返还额（按来源 / 钱包）
+    const w = wallets[key] = wallets[key] || { key, code: c, proj: p, name: per[c] ? per[c].name : c, E: 0, frozen: 0, willExec: 0, refund: 0, pos: [] };
+    w.E += i.E; w.frozen += i.frozen; w.willExec += i.willExec; w.refund += i.refund;
+    if (g.status === 'OPEN' && i.frozen > 0) w.pos.push(g.poNo);
+  });
+  const curWillExec = sum(poList, r => { const i = info.get(r); return i.s === asOf ? i.willExec : 0; });
+  const curOver = Math.max(0, curFc - curWillExec);
+
+  /* ---- OD 扣减估算：扣减日历 1月0 / 2–5月各1 / 6月2（上半年清算）/ 7–11月各1 / 12月≈bonusMonths（年终清算） ---- */
+  const odBase = odGroups.length ? theoryOd : odAvg;
+  const odMult = mo => mo === 1 ? 0 : mo === 6 ? 2 : mo === 12 ? (m.bonusMonths || 3.5) : 1;
+  const odEst = {}, poEst = {};
+  if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = odBase * odMult(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
+  const odFuture = sum(Object.entries(odEst), ([mo, v]) => +mo >= curM ? v : 0);
   const poFuture = sum(Object.values(poEst));
 
-  // 预测执行率
-  const forecastEnd = execTotal + poFuture + odFuture;
-  const forecastRate = planCnyTotal > 0 ? forecastEnd / planCnyTotal : null;
-
-  // 校准：团队理论 vs 历史实际
-  const calibPo = (poGroups.length && poAvg > 0) ? (theoryPo(Math.max(curM, 1)) - poAvg) / poAvg : null;
-  const calibOd = (odGroups.length && odAvg > 0) ? (theoryOd - odAvg) / odAvg : null;
-
-  // 下月 PO 建议（决策点：本月18-19日，20日左右下下月PO）
-  const nextM = curM >= 12 ? null : curM + 1;
-  let poAdvice = null;
-  if (nextM != null && started && planCnyTotal > 0) {
-    const fcNext = poMonthlyFc[nextM] || 0;
-    const thNext = poGroups.length ? theoryPo(nextM) : 0;
-    const histNext = (poAvg > 0 && poAvgWd > 0) ? poAvg * workdays(nextM) / poAvgWd : 0;
-    const natural = Math.max(thNext, histNext);   // 团队自然需求（不含已下 PO）
-    const gap = m.execRateTarget * planCnyTotal - forecastEnd;
-    const monthsLeft = 13 - nextM;
-    const extra = gap > 0 ? gap / monthsLeft : 0;
-    const newIssue = Math.max(natural + extra - fcNext, 0);
-    poAdvice = { nextM, fcNext, thNext, histNext, natural, odEstNext: odEst[nextM] || 0, gap, extra, newIssue, suggest: fcNext + newIssue, late: curM >= 11, wd: workdays(nextM) };
-  }
-
-  // OD 调拨建议
-  let odAdvice = null;
-  if (nextM != null && started) {
-    const need = odEst[nextM] || 0;
-    const have = sum(codes, c => snap.rows[c].od.avail || 0);
-    odAdvice = { nextM, need, have, transfer: Math.max(need - have, 0), alloc: [] };
-    const pool = sum(codes, c => per[c].itwRemain > 0 ? per[c].itwRemain : 0);
-    if (odAdvice.transfer > 0 && pool > 0) codes.forEach(c => {
-      if (per[c].itwRemain > 0) odAdvice.alloc.push({ code: c, name: snap.rows[c].name, amt: odAdvice.transfer * per[c].itwRemain / pool });
+  /* ================= 年底推演：每个来源从现在推到 12/31，本月的指令是推演的第一步 =================
+     钱的使用顺序：⓪ 调账（往月未关闭 PO 的已执行额在预算项间调整，不用新钱）→ ① 团队 PO（硬性）→ ② 常规 OD（硬性）
+     → ③ 临时 OD 补缺口（年底）→ ④ 1 月 PO（年底）→ ⑤ 花不掉 */
+  const srcRows = [];
+  const blank = () => ({ used: 0, usedItw: {}, usedOd: {}, po: 0, poNext: 0, odExec: 0, odXfer: 0, temp: 0, jan: 0 });
+  codes.forEach(c => {
+    const s = per[c], p = s.plan;
+    const assessed = !!(p && !p.dead && s.planCny > 0 && s.target > 0);
+    const willExec = willExecByCode[c] || 0;
+    const row = Object.assign({ code: c, name: p ? p.name : s.name, platName: s.name, plan: p, planCny: p && !p.dead ? s.planCny : null, target: p ? s.target : null, assessed, unmatched: !p, exec: s.exec, willExec, refund: refundByCode[c] || 0,
+      wallets: Object.keys(s.byProj).map(pk => ({ proj: pk, itw: s.byProj[pk].itwRemain, od: s.byProj[pk].odRemain })) }, blank());
+    row.gap = assessed ? Math.max(0, s.planCny * s.target - s.exec - willExec) : 0;
+    row.gapLeft = row.gap;
+    row.funds = sum(row.wallets, w => w.itw + w.od);
+    srcRows.push(row);
+  });
+  plansY.forEach(p => {   // 规划了但平台未到账（或编码未关联）的来源：缺口全额，没有钱
+    if (p.dead || wusdOf(p) <= 0) return;
+    if (p.code && per[p.code]) return;
+    const pc = wusdOf(p) * 10000 * fx;
+    const row = Object.assign({ code: p.code || '', name: p.name, platName: '', plan: p, planCny: pc, target: tgtOf(p), assessed: tgtOf(p) > 0, notGranted: true, exec: 0, willExec: 0, refund: 0, wallets: [] }, blank());
+    row.gap = pc * tgtOf(p); row.gapLeft = row.gap; row.funds = 0;
+    srcRows.push(row);
+  });
+  /* ---- ⓪ 调账：往月未关闭的 PO，已执行额可以在预算项之间调整（PO 总执行额不变）----
+     把有富余的来源（不考核的=全部已执行额；考核来源=超出目标的部分）在同一个 PO、同一个花钱项目内的执行额，
+     调给同一 PO 里仍有缺口的来源。不用新钱，验收前做完即可。未关联规划的来源不让出。 */
+  const adjList = [];
+  if (started) {
+    const rowOf = {}; srcRows.forEach(r => { if (r.code) rowOf[r.code] = r; });
+    const slack = {}, gapNow = {};
+    srcRows.forEach(r => {
+      gapNow[r.code] = r.gap;
+      slack[r.code] = (r.unmatched || r.notGranted) ? 0 : (!r.assessed ? r.exec : Math.max(0, r.exec + r.willExec - r.planCny * r.target));
+    });
+    Object.values(byPo).forEach(g => {
+      if (g.status !== 'OPEN' || !g.startDate || +g.startDate.slice(5, 7) >= asOf) return;   // 只看往月未关闭的 PO
+      const rows = g.detail.filter(x => x.E > 0 && rowOf[x.code]);
+      rows.forEach(d => {
+        const D = rowOf[d.code];
+        let remE = d.E;   // 这一行最多能调出的额（不能把已执行调成负数）
+        for (let n = 0; n < 10 && slack[d.code] > 0.5 && remE > 0.5; n++) {
+          const rcv = rows.filter(x => x.proj === d.proj && x.code !== d.code && gapNow[x.code] > 0.5)
+            .map(x => ({ x, w: rowOf[x.code].wallets.find(w2 => w2.proj === d.proj) })).filter(o => o.w && o.w.itw > 0.5)   // 调入方在同一个钱包里要有钱承接
+            .sort((a, b) => gapNow[b.x.code] - gapNow[a.x.code])[0];
+          if (!rcv) break;
+          const R = rowOf[rcv.x.code];
+          const t = Math.min(slack[d.code], gapNow[rcv.x.code], remE, rcv.w.itw);
+          slack[d.code] -= t; gapNow[rcv.x.code] -= t; remE -= t;
+          rcv.w.itw -= t;
+          const wD = D.wallets.find(w => w.proj === d.proj);
+          if (wD) wD.itw += t; else D.wallets.push({ proj: d.proj, itw: t, od: 0 });
+          R.adj = (R.adj || 0) + t; D.adj = (D.adj || 0) - t;
+          adjList.push({ poNo: g.poNo, from: d.code, fromName: d.name, to: rcv.x.code, toName: rcv.x.name, proj: d.proj, amt: t });
+        }
+      });
+    });
+    srcRows.forEach(r => {   // 调账后的缺口与余额
+      r.adj = r.adj || 0;
+      if (r.adj) { r.gap = r.assessed ? Math.max(0, r.planCny * r.target - r.exec - r.adj - r.willExec) : 0; r.gapLeft = r.gap; r.funds = sum(r.wallets, w => w.itw + w.od); }
     });
   }
+  // 从某来源取钱：优先一个钱包取够；IT外包剩余先用，不够再用 OD 剩余（需先调回）
+  const avail = (r, w) => (w.itw - (r.usedItw[w.proj] || 0)) + (w.od - (r.usedOd[w.proj] || 0));
+  const take = (r, amt, detail) => {
+    let left = amt;
+    const ups = detail ? detail.projs : null;
+    r.wallets.slice().sort((a, b) => ((avail(r, b) >= amt) - (avail(r, a) >= amt)) || ((ups && ups.has(b.proj) ? 1 : 0) - (ups && ups.has(a.proj) ? 1 : 0)) || (avail(r, b) - avail(r, a))).forEach(w => {
+      if (left <= 0 || avail(r, w) <= 0) return;
+      const g = Math.min(avail(r, w), left);
+      const gi = Math.min(Math.max(w.itw - (r.usedItw[w.proj] || 0), 0), g), go = g - gi;
+      r.usedItw[w.proj] = (r.usedItw[w.proj] || 0) + gi; r.usedOd[w.proj] = (r.usedOd[w.proj] || 0) + go; r.used += g; left -= g;
+      if (detail) { ups.add(w.proj); detail.items.push({ code: r.code, name: r.name, proj: w.proj, amt: g, odBack: go }); }
+    });
+    return amt - left;
+  };
+  const poMonths = [];
+  const nextDetail = { projs: new Set(), items: [] };
+  // OD 扣减落到钱包：先用已有 OD 额度，再按给定的项目顺序从 IT外包 调拨（仍先补缺口）；不够才动下一个项目
+  const itwFree = (r, pk) => { const w = r.wallets.find(x => x.proj === pk); return w ? Math.max(0, w.itw - (r.usedItw[pk] || 0)) : 0; };
+  const odPlan = (amount, order) => {
+    let left = amount;
+    const res = { amount, used: [], xfer: [], proj: order[0], otherProj: false, left: 0 };
+    const gl = {}; srcRows.forEach(r => { gl[r.code] = r.gapLeft; });   // 计划内的剩余缺口（已有额度用掉的部分也算补了缺口）
+    srcRows.forEach(r => r.wallets.forEach(w => {
+      const q0 = Math.max(0, w.od - (r.usedOd[w.proj] || 0));
+      if (left <= 0 || q0 <= 0) return;
+      const q = Math.min(q0, left); left -= q; gl[r.code] = Math.max(0, gl[r.code] - q); res.used.push({ code: r.code, name: r.name, proj: w.proj, amt: q });
+    }));
+    const pass = (pk, gapOnly) => {
+      srcRows.filter(r => itwFree(r, pk) > 0 && (!gapOnly || gl[r.code] > 0)).sort((a, b) => gapOnly ? gl[b.code] - gl[a.code] : itwFree(b, pk) - itwFree(a, pk)).forEach(r => {
+        if (left <= 0) return;
+        const g = Math.min(gapOnly ? gl[r.code] : Infinity, itwFree(r, pk), left);
+        left -= g; gl[r.code] = Math.max(0, gl[r.code] - g); res.xfer.push({ code: r.code, name: r.name, proj: pk, amt: g });
+      });
+    };
+    order.forEach((pk, i) => { if (left <= 0) return; if (i > 0) res.otherProj = true; pass(pk, true); if (left > 0) pass(pk, false); });
+    res.left = left;
+    return res;
+  };
+  // 本窗口 OD 出账项目的优先顺序：缺口内能承接的多的优先 → 有钱的来源多的优先 → 已有 OD 额度多的优先（沿用上次）
+  const pickOdOrder = () => {
+    const projs = projects.length ? projects.slice() : [''];
+    const capIn = pk => sum(srcRows, r => Math.min(r.gapLeft, itwFree(r, pk)));
+    const odHas = pk => sum(srcRows, r => { const w = r.wallets.find(x => x.proj === pk); return w ? Math.max(0, w.od - (r.usedOd[pk] || 0)) : 0; });
+    return projs.sort((a, b) => (capIn(b) - capIn(a)) || (srcRows.filter(r => itwFree(r, b) > 0).length - srcRows.filter(r => itwFree(r, a) > 0).length) || (odHas(b) - odHas(a)));
+  };
+  const applyOd = plan => {
+    plan.used.forEach(u => { const r = srcRows.find(x => x.code === u.code); r.odExec += u.amt; r.gapLeft = Math.max(0, r.gapLeft - u.amt); r.used += u.amt; r.usedOd[u.proj] = (r.usedOd[u.proj] || 0) + u.amt; });
+    plan.xfer.forEach(x => { const r = srcRows.find(x2 => x2.code === x.code); r.odExec += x.amt; r.gapLeft = Math.max(0, r.gapLeft - x.amt); r.odXfer += x.amt; r.used += x.amt; r.usedItw[x.proj] = (r.usedItw[x.proj] || 0) + x.amt; });
+  };
+  // 当月团队 PO：先补缺口（缺口大的来源优先、集中分），缺口填满后的余量走自由资金
+  const allocPoMonth = (mo, det) => {
+    const pm = { mo, theory: needPo(mo), issued: issuedByMonth[mo] || 0, need: Math.max(0, needPo(mo) - (issuedByMonth[mo] || 0)), funded: 0 };
+    poMonths.push(pm);
+    let left = pm.need;
+    srcRows.filter(r => r.gapLeft > 0 && r.funds - r.used > 0).sort((a, b) => b.gapLeft - a.gapLeft).forEach(r => {
+      if (left <= 0) return;
+      const got = take(r, Math.min(r.gapLeft, r.funds - r.used, left), det);
+      r.po += got; r.gapLeft -= got; left -= got; if (det) r.poNext += got;
+    });
+    if (left > 0) srcRows.filter(r => r.funds - r.used > 0).sort((a, b) => (b.funds - b.used) - (a.funds - a.used)).forEach(r => {
+      if (left <= 0) return;
+      const got = take(r, Math.min(r.funds - r.used, left), det);
+      r.po += got; left -= got; if (det) r.poNext += got;
+    });
+    pm.funded = pm.need - left;
+  };
+  // 调拨窗口（按扣减所在月）：1–4 月的扣减 → 5 月底；5–6 月 → 6 月底；7–10 月 → 10 月底；11–12 月 → 年底
+  const winEndOf = mo => mo <= 4 ? 5 : mo <= 6 ? 6 : mo <= 10 ? 10 : 12;
+  // 钱严格按月排：每个月先排「下月的团队 PO」（20 号前后下单），再排「当月月底的 OD 扣减」——近处的硬性支出先拿到钱
+  const odLog = [];        // {mo, kind: used|xfer, code, name, proj, amt}
+  let odProjOrder = null, odWinCur = -1, odUnfunded = 0, odUnfundedWin = 0, odOtherWin = false;
+  const allocOdMonth = mo => {
+    if (!odEst[mo]) return;
+    const end = winEndOf(mo);
+    if (end !== odWinCur) { odWinCur = end; odProjOrder = pickOdOrder(); }   // 一个窗口只选一次出账项目
+    const plan = odPlan(odEst[mo], odProjOrder);
+    applyOd(plan);
+    plan.used.forEach(u => odLog.push(Object.assign({ mo, kind: 'used' }, u)));
+    plan.xfer.forEach(x => odLog.push(Object.assign({ mo, kind: 'xfer' }, x)));
+    odUnfunded += plan.left;
+    if (end === winEndOf(curM)) { odUnfundedWin += plan.left; if (plan.otherProj) odOtherWin = true; }   // 只记当前窗口内的（出指令用）
+  };
+  if (started) for (let mo = curM; mo <= 12; mo++) { if (mo < 12) allocPoMonth(mo + 1, mo === curM ? nextDetail : null); allocOdMonth(mo); }
+  const odWinEnd = winEndOf(Math.max(curM, 1));   // 当前决策点所在窗口
+  const odWinNeed = started ? sum(Object.entries(odEst), ([mo, v]) => +mo <= odWinEnd ? v : 0) : 0;
+  // 本窗口的调拨指令：按钱包汇总窗口内各月用掉的已有额度和需要调拨的金额
+  const aggOd = kind => {
+    const mp = {};
+    odLog.filter(x => x.kind === kind && x.mo <= odWinEnd).forEach(x => { const k = x.code + '|' + x.proj; const o = mp[k] = mp[k] || { code: x.code, name: x.name, proj: x.proj, amt: 0 }; o.amt += x.amt; });
+    return Object.values(mp);
+  };
+  const odInstr = started ? { used: aggOd('used'), xfer: aggOd('xfer'), proj: odProjOrder ? odProjOrder[0] : '', otherProj: odOtherWin, left: odUnfundedWin } : null;
+  // 年底专用：往月未关闭 PO 的返还额（12 月 15 日前验收后才回到钱包）——只能用于年底的临时 OD 和 1 月 PO，不用于本月的 PO
+  const refundPastC = r => refundPastByCode[r.code] || 0;
+  const tempList = [];
+  let tempFromRefund = 0;
+  if (curM >= 11) srcRows.filter(r => r.gapLeft > 0 && r.funds - r.used + refundPastC(r) > 0).sort((a, b) => b.gapLeft - a.gapLeft).forEach(r => {   // ③ 临时 OD 补缺口
+    const want = Math.min(r.gapLeft, r.funds - r.used + refundPastC(r));
+    const got = take(r, Math.min(want, Math.max(0, r.funds - r.used)), null);     // 先用现在就能花的钱
+    const fromRef = Math.min(want - got, refundPastC(r));                        // 不够的部分靠验收返还
+    r.temp += got + fromRef; r.gapLeft -= got + fromRef; tempFromRefund += fromRef;
+    tempList.push({ code: r.code, name: r.name, amt: got + fromRef, fromRef });
+  });
+  const janItems = [];
+  let janReserve = 0, janFromRefund = 0;
+  if (curM >= 11) {   // ④ 1 月 PO：用达标后的结余（只认 IT外包剩余，OD 额度要先调回）；不够再用往月 PO 的验收返还
+    let left = needJan;
+    srcRows.slice().sort((a, b) => sum(b.wallets, w => Math.max(0, w.itw - (b.usedItw[w.proj] || 0))) - sum(a.wallets, w => Math.max(0, w.itw - (a.usedItw[w.proj] || 0)))).forEach(r => r.wallets.forEach(w => {
+      if (left <= 0) return;
+      const g = Math.min(Math.max(0, w.itw - (r.usedItw[w.proj] || 0)), left);
+      if (g <= 0) return;
+      r.usedItw[w.proj] = (r.usedItw[w.proj] || 0) + g; r.used += g; r.jan += g; left -= g;
+      janItems.push({ code: r.code, name: r.name, proj: w.proj, amt: g });
+    }));
+    srcRows.forEach(r => r.wallets.forEach(w => {   // 仍然不够：用往月 PO 验收后返还的钱
+      if (left <= 0) return;
+      const g = Math.min(left, refundPastW[r.code + '|' + w.proj] || 0);
+      if (g <= 0) return;
+      left -= g; janFromRefund += g; r.jan += g;
+      janItems.push({ code: r.code, name: r.name, proj: w.proj, amt: g, fromRef: true });
+    }));
+    janReserve = needJan - left;
+  }
+  srcRows.forEach(r => {
+    r.endExec = r.exec + r.adj + r.willExec + r.po + r.odExec;   // 年底预计执行（含调账，不含临时 OD）
+    r.rate = r.planCny ? r.endExec / r.planCny : null;
+    r.rateWithTemp = r.planCny ? (r.endExec + r.temp) / r.planCny : null;
+    r.hit = r.assessed ? r.endExec >= r.planCny * r.target - 0.5 : true;
+    r.left = r.funds - r.used;
+  });
+  const forecastEnd = sum(srcRows, r => r.endExec);
+  const forecastRate = planCnyTotal > 0 ? forecastEnd / planCnyTotal : null;
+  const assessedN = srcRows.filter(r => r.assessed).length;
+  const hitN = srcRows.filter(r => r.assessed && r.hit).length;
+  const tempTotal = sum(tempList, x => x.amt);
+  const unspent = Math.max(0, sum(srcRows, r => r.left));
+  const odAvgRate = odGroups.length ? theoryOd / Math.max(sum(odGroups, g => g.headcount), 1) : (odAvg || 0);
+  // 团队资金是否够：可支配 vs 剩余团队 PO + 常规 OD 扣减；不够时算出哪个月耗尽
+  const S = sum(srcRows, r => r.funds), P = sum(poMonths, p => p.need), D = odFuture;
+  const fundShort = started ? Math.max(0, P + D - S) : 0;
+  let fundMonth = '';
+  if (fundShort > 0) {
+    let cum = 0;
+    for (let mo = curM; mo <= 12; mo++) { cum += (odEst[mo] || 0) + ((poMonths.find(p => p.mo === mo) || {}).need || 0); if (cum > S) { fundMonth = mo + ' 月'; break; } }
+  }
+  // 催 BA：缺口 > 可支配 + 预计返还
+  const baList = srcRows.filter(r => r.assessed && r.gap > r.funds + r.refund + 0.5).map(r => {
+    const short = r.gap - r.funds - r.refund;
+    const perMonth = Math.max(needPo(Math.min(Math.max(curM, 1), 12)), 1);
+    return { code: r.code, name: r.name, gap: r.gap, short, kind: r.notGranted ? '未授予' : '授予不足', latest: Math.max(Math.min(curM, 11) + 1, 12 - Math.ceil(short / perMonth)) };
+  });
+  const excessOd = Math.max(0, odRemainTotal - D);   // 多余 OD 额度：年底花不掉，需调回
+
+  /* ---- 本月指令 ---- */
+  const nextM = curM >= 12 ? null : curM + 1;
+  const ceilK = v => Math.ceil(v / 1000) * 1000;
+  let poDecision = null;
+  if (started && snap) {
+    const yearEnd = curM >= 11;
+    const odXferNow = odInstr ? Math.max(0, sum(odInstr.xfer, x => x.amt)) : 0;
+    poDecision = {
+      yearEnd, isDec: curM === 12, nextM, asOf,
+      // ① PO（1–11 月：下月的 PO；12 月：下旬下明年 1 月的 PO）
+      po: nextM ? {
+        nextM, wd: workdays(nextM), theory: theoryPo(nextM), need: needPo(nextM), issued: issuedByMonth[nextM] || 0,
+        toIssue: ceilK(Math.max(0, needPo(nextM) - (issuedByMonth[nextM] || 0))),
+        low: Math.max(0, needPo(nextM) - poDaily * 0.5), high: yearEnd ? needPo(nextM) : needPo(nextM) + poDaily,
+        alloc: nextDetail.items, projs: Array.from(nextDetail.projs), funded: poMonths.length ? poMonths[0].funded : 0,
+        histNext: (poAvg > 0 && poAvgWd > 0) ? poAvg * workdays(nextM) / poAvgWd : 0
+      } : null,
+      // ④ 1 月 PO（11 月预演；12 月就是本月的 PO 指令）
+      jan: { need: needJan, toIssue: ceilK(needJan), wd: janWd, reserve: janReserve, short: Math.max(0, needJan - janReserve), fromRefund: janFromRefund, alloc: janItems, hist: (poAvg > 0 && poAvgWd > 0) ? poAvg * janWd / poAvgWd : 0 },
+      // ② OD 调拨（一个窗口只动一个花钱项目）
+      od: { winEnd: odWinEnd, winNeed: odWinNeed, have: Math.min(odRemainTotal, odWinNeed), transfer: odXferNow, shortWin: odInstr.left, proj: odInstr.proj, wallets: odInstr.xfer, used: odInstr.used, otherProj: odInstr.otherProj, excessOd, unfundedYear: odUnfunded },
+      // ③ 临时 OD 补缺口
+      adjust: adjList,   // ⓪ 调账
+      temp: { total: tempTotal, fromRefund: tempFromRefund, people: odAvgRate > 0 ? Math.ceil(tempTotal / odAvgRate) : 0, list: tempList, rate: odAvgRate },
+      refundPast: sum(Object.values(refundPastByCode)),   // 往月 PO 的验收返还额（年底可用，前提是 12 月 15 日前验收）
+      baList, calibR,
+      // 在途识别结果（本月）
+      inflight: { fc: curFc, willExec: curWillExec, over: curOver, k: kNeed, need: teamNeedAsOf, bySrc: Object.keys(willExecByCode).map(c => ({ code: c, name: per[c] ? per[c].name : c, fc: sum(poList.filter(r => r.budgetCode === c && info.get(r).s === asOf), r => info.get(r).C) })).filter(x => x.fc > 0) },
+      // 推演汇总
+      rows: srcRows, hit: hitN, assessed: assessedN, weightedTarget, forecastEnd, withTemp: forecastEnd + tempTotal, unspent,
+      fund: { total: S, poNeed: P, odNeed: D, short: fundShort, month: fundMonth }
+    };
+  }
+  const odOverList = codes.filter(c => (per[c].odExec || 0) > (per[c].odAvail || 0) && (per[c].odExec || 0) > 0);
+
+  // 校准：团队理论 vs 历史实际
+  const calibPo = (poGroups.length && poAvg > 0) ? (theoryPo(Math.max(Math.min(curM, 12), 1)) - poAvg) / poAvg : null;
+  const calibOd = (odGroups.length && odAvg > 0) ? (theoryOd - odAvg) / odAvg : null;
 
   // 授予进度（催 BA）
   const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
   const grantWarn = [];
-
-  // OD 额度不足预警（执行>可用 或 可用=0但有执行 → 说明调拨不够）
-  codes.forEach(code => {
+  odOverList.forEach(code => {
     const s = per[code];
-    if ((s.odAvail || 0) < (s.odExec || 0) && (s.odExec || 0) > 0) {
-      grantWarn.push({ name: (s.plan ? s.plan.name : s.name) + ' OD', msg: 'OD 已执行 ' + fmtCny(s.odExec) + ' > 可用 ' + fmtCny(s.odAvail) + '——调拨不足，请增加 OD 额度' });
-    }
+    grantWarn.push({ name: (s.plan ? s.plan.name : s.name) + ' OD', msg: 'OD 已执行 ' + fmtCny(s.odExec) + ' > 可用 ' + fmtCny(s.odAvail) + '——调拨不足，请增加 OD 额度' });
   });
   plansY.forEach(p => {
     if (p.dead) return;   // 失效（预算下不来）：不再催BA
@@ -1197,134 +1587,30 @@ function calc() {
     });
   }
 
-  const r2_forecastByCode = {};
-  codes.forEach(code => {
-    const s = per[code];
-    r2_forecastByCode[code] = (s.itwFc || 0) + (s.odAvail || 0) * 0.8;   // 粗估：PO预测+OD可用的80%
-  });
-  // 年底留钱：预计未执行完项目的剩余（可留给1月PO）
-  let yearEndCarry = null;
-  if (curM >= 11 && planCnyTotal > 0) {
-    const items = [];
-    codes.forEach(code => {
-      const s = per[code];
-      if (!s.plan || s.plan.dead) return;
-      const tgt = s.target || m.execRateTarget;
-      if (tgt === 0) return;   // 不考核的不管
-      const projEnd = s.exec + (r2_forecastByCode[code] || 0);  // 预计年底执行
-      const remaining = Math.max(s.planCny * tgt - projEnd, 0);
-      if (remaining > 1000) items.push({ code, name: s.plan.name, remaining, rate: s.execRate });
-    });
-    if (items.length) yearEndCarry = { items, total: sum(items, x => x.remaining) };
-  }
-
-  // ===== 下PO决策引擎：按来源独立计算（补达标 → OD调拨 → 1月PO → 余量）=====
-  let poDecision = null;
-  if (poAdvice && started) {
-    const itwRemainTotal = sum(codes, x => per[x].itwRemain);
-    const natural = Math.max(poAdvice.thNext, poAdvice.histNext);
-    const halfDay = Math.round(poGroups.length ? poDaily * 0.5 : 0);
-    const oneDay = poGroups.length ? poDaily : 0;
-    const yearEnd = curM >= 11;
-
-    // ---- 12月OD清算需求 ----
-    const odBase2 = odGroups.length ? theoryOd : odAvg;
-    const odDecNeed = Math.round(odBase2 * (m.bonusMonths || 3.5));
-    const odHave = sum(codes, x => per[x].odAvail);
-
-    // ---- 1月PO团队需求 ----
-    const janWd = workdays(1);
-    const janNatural = poGroups.length ? poDaily * janWd * attend : (poAvg > 0 ? poAvg * janWd / Math.max(poAvgWd, 1) : 0);
-
-    // ---- Phase 1：每个来源的 12月PO（补达标）----
-    const srcRows = [];
-    codes.forEach(code => {
-      const s = per[code];
-      if (!s.plan || s.plan.dead) return;
-      const tgt = s.target || m.execRateTarget;
-      if (tgt === 0) { srcRows.push({ code, name: s.plan.name, planCny: s.planCny, target: 0, execNow: s.exec, fc: s.itwFc, remain: s.itwRemain, odAvail: s.odAvail, decPO: 0, odXfer: 0, janPO: 0, hitTarget: true, finalRate: null, note: '不考核' }); return; }
-      const need = Math.max(0, s.planCny * tgt - s.exec - s.itwFc, 0);
-      const decPO = Math.min(need, s.itwRemain);
-      const after = s.itwRemain - decPO;
-      const willExec = s.exec + s.itwFc + decPO;
-      const hit = willExec >= s.planCny * tgt - 100;
-      srcRows.push({ code, name: s.plan.name, planCny: s.planCny, target: tgt, execNow: s.exec, fc: s.itwFc, remain: s.itwRemain, odAvail: s.odAvail, decPO, after, hitTarget: hit, finalRate: s.planCny > 0 ? willExec / s.planCny : null, gap: Math.max(s.planCny * tgt - willExec, 0) });
-    });
-
-    // ---- Phase 2：OD调拨（从剩余最多的来源优先）----
-    let odPool = Math.max(odDecNeed - odHave, 0);   // 还需要从IT外包调多少到OD
-    if (odPool > 0) {
-      const sorted = [...srcRows].sort((a, b) => (b.after || 0) - (a.after || 0));
-      for (const r of sorted) {
-        if (odPool <= 0) break;
-        if (!r.after || r.after <= 0) continue;
-        const xfer = Math.min(r.after, odPool);
-        r.odXfer = xfer;
-        r.after -= xfer;
-        odPool -= xfer;
-      }
-    }
-
-    // ---- Phase 3：1月PO（从各来源的OD后剩余出）----
-    let janPool = janNatural;
-    const sorted2 = [...srcRows].sort((a, b) => (b.after || 0) - (a.after || 0));
-    for (const r of sorted2) {
-      if (janPool <= 0) break;
-      if (!r.after || r.after <= 0) continue;
-      const give = Math.min(r.after, janPool);
-      r.janPO = give;
-      r.after -= give;
-      janPool -= give;
-    }
-    const janShort = Math.max(janPool, 0);   // 1月PO缺口（没凑够）
-
-    // ---- Phase 4：更新各来源最终执行率（含OD执行）----
-    srcRows.forEach(r => {
-      if (r.target === 0) return;
-      const odExec = r.odXfer || 0;   // OD调拨部分会计入执行（12月31日扣）
-      r.finalRate = r.planCny > 0 ? (r.execNow + r.fc + r.decPO + odExec) / r.planCny : null;
-      r.hitTarget = r.finalRate != null ? r.finalRate >= r.target - 0.005 : true;
-    });
-
-    // ---- 汇总 ----
-    const totalDecPO = sum(srcRows, r => r.decPO);
-    const totalOdXfer = sum(srcRows, r => r.odXfer);
-    const totalJanPO = sum(srcRows, r => r.janPO);
-    const totalUnspent = sum(srcRows, r => r.after || 0);
-    const totalTargetExec = sum(srcRows.filter(r => r.target > 0), r => r.planCny * r.target);
-    const totalWillExec = sum(srcRows, r => r.execNow + r.fc + r.decPO + (r.odXfer || 0));
-    const overallGap = Math.max(totalTargetExec - totalWillExec, 0);
-
-    poDecision = {
-      natural, halfDay, oneDay, yearEnd, itwRemainTotal,
-      fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd,
-      poDaily: poGroups.length ? poDaily : 0, attend: attend,
-      srcRows, odDecNeed, odHave, janNatural, janWd, janShort,
-      totalDecPO, totalOdXfer, totalJanPO, totalUnspent, overallGap
-    };
-  }
-
   return {
-    Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, poDecision, itwExec, odExec, execTotal, execRate,
+    Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, poDecision, itwExec, odExec, execTotal, execRate, weightedTarget,
     timeProg, curM, poMonthlyAct, poMonthlyFc, poActByCode, poFrozen, poReturn, openCnt,
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
-    poAdvice, odAdvice, grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc, yearEndCarry,
+    grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode,
     workdays, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend },
     poAvg, poAvgWd,
+    projects, hasProj, byPo, wallets, odRemainTotal, odOverList,
+    importNotes: state.importNotes || [],
     odAsOfText: snap ? 'OD 执行截至 ' + (+snap.date.slice(5, 7)) + ' 月（平台口径，滞后约 1 个月）' : ''
   };
 }
-
 /* ================= 渲染：通用 ================= */
 function projectSelect() { }
-function rateColor(rate, timeProg, target) {
+function rateColor(rate, timeProg, target, forecast) {
   if (rate == null || !target) return '';
+  // 有推演结果时按结果着色：会达标=绿（已达）/蓝（在途），会差=红；没有推演时按时间进度
+  if (typeof forecast === 'number') return forecast >= target ? (rate >= target ? 'f-green' : '') : 'f-red';
   if (rate >= target) return 'f-green';
   if (rate >= timeProg - 0.05) return '';
   return 'f-red';
 }
-function execRowHtml(name, rate, target, timeProg, forecast) {
+function execRowHtml(name, rate, target, timeProg, forecast, fcNum) {
   const w = rate == null ? 0 : Math.min(rate * 100, 100);
   const marks = (!target ? '' :
     '<div class="mark" style="left:' + Math.min(target * 100, 100) + '%" title="目标线 ' + fmtPct(target) + '"></div>') +
@@ -1332,7 +1618,7 @@ function execRowHtml(name, rate, target, timeProg, forecast) {
   const fore = typeof forecast === 'string' ? forecast : (forecast != null ? '预计年底 ' + fmtPct(forecast) : '');
   return '<div class="exec-row">' +
     '<div class="exec-name" title="' + esc(name) + '">' + esc(name) + '</div>' +
-    '<div class="pbar"><div class="pbar-fill ' + rateColor(rate, timeProg, target) + '" style="width:' + w.toFixed(1) + '%"></div>' + marks + '</div>' +
+    '<div class="pbar"><div class="pbar-fill ' + rateColor(rate, timeProg, target, typeof forecast === 'number' ? forecast : fcNum) + '" style="width:' + w.toFixed(1) + '%"></div>' + marks + '</div>' +
     '<div class="exec-val">' + fmtPct(rate) + '</div>' +
     '<div class="exec-fore">' + fore + '</div></div>';
 }
@@ -1382,65 +1668,90 @@ function renderNow() {
         ? '<div class="muted" style="margin-bottom:12px">开启新年：复制上年规划与参数（编码关联沿用，金额可再调），然后正常导入新年平台数据。</div>' +
           '<div class="btn-row" style="justify-content:center"><button class="btn primary" data-action="year:start">🚀 开启 ' + Y + ' 年度（复制上年）</button>' +
           '<button class="btn" data-action="data:demo">加载示例数据</button></div>'
-        : '<div class="muted" style="margin-bottom:12px">四步开始：① 数据管理 → 录入年初规划（名称+美金）② 录团队配置（预测更准）③ 顶部「导入平台数据」拖入 4 个文件 ④ 回到本页看进展、风险与行动。</div>' +
+        : '<div class="muted" style="margin-bottom:12px">四步开始：① 数据管理 → 录入年初规划（名称+美金）② 录团队配置（预测更准）③ 平台导出文件放进数据集文件夹（每个花钱项目一个子文件夹）④ 回到本页看进展、风险与行动。</div>' +
           '<div class="btn-row" style="justify-content:center"><button class="btn primary" data-action="data:demo">加载示例数据</button>' +
           '<button class="btn" data-action="goto:data">去录规划</button></div>') + '</div>';
     $('#summaryBar').innerHTML = hasOtherYear ? '<b>' + Y + ' 年度待开启</b>：历史年度数据已封卷保存，随时可切换回看。' : '<b>开始前</b>：先用示例数据体验，或直接录入你的规划与团队配置。';
   } else ob.innerHTML = '';
 
+  const d = c.poDecision, P = d && d.po, J = d && d.jan, O = d && d.od;
+  const wl = x => (x.proj && c.hasProj ? '<b>' + esc(x.proj) + '</b> / ' : '') + esc(x.name || x.code);   // 钱包：花钱项目 / 预算来源
+  const odLabel = O ? (O.winEnd === 5 ? '5 月底' : O.winEnd === 6 ? '6 月底（含上半年清算）' : O.winEnd === 10 ? '10 月底' : '12 月底（含年终清算）') : '';
+  const rowBy = {};
+  if (d) d.rows.forEach(r => { if (r.code) rowBy[r.code] = r; });
+
   /* ---- ⓪ 摘要条 ---- */
-  const gapTxt = (c.forecastRate != null && c.forecastRate < m.execRateTarget)
-    ? '距目标缺口 <b>' + fmtCny(m.execRateTarget * c.planCnyTotal - c.forecastEnd) + '</b>'
-    : '可达目标 ✓';
-  let actTxt = [];
-  if (c.poDecision && c.poDecision.totalDecPO > 0) actTxt.push('下月 PO <b>' + fmtCny(c.poDecision.totalDecPO) + '</b>' + (c.poDecision.janShort > 0 ? ' ⚠1月缺' : ''));
-  if (c.odAdvice && c.odAdvice.transfer > 0) actTxt.push('OD 调拨 <b>' + fmtCny(c.odAdvice.transfer) + '</b>');
+  const gapTxt = (d && d.assessed > 0 && d.hit < d.assessed)
+    ? '<b>' + (d.assessed - d.hit) + ' 个考核来源不达标</b>'
+    : (c.forecastRate != null && c.weightedTarget != null && c.forecastRate < c.weightedTarget)
+      ? '距加权目标还差 <b>' + fmtCny(c.weightedTarget * c.planCnyTotal - c.forecastEnd) + '</b>'
+      : (d ? '各来源均可达标 ✓' : '');
+  const actTxt = [];
+  if (d) {
+    if (d.adjust.length) actTxt.push('调账 <b>' + fmtCny(sum(d.adjust, x => x.amt)) + '</b>');
+    if (d.isDec) actTxt.push('下旬下 1 月 PO <b>' + fmtCny(J.toIssue) + '</b>' + (J.short > 0 ? ' ⚠缺 ' + fmtCny(J.short) : ''));
+    else if (P) { if (P.toIssue > 0) actTxt.push(P.nextM + ' 月 PO <b>' + fmtCny(P.toIssue) + '</b>'); else if (P.issued > 0) actTxt.push(P.nextM + ' 月 PO 已下齐 ✓'); }
+    if (O.transfer > 0) actTxt.push('OD 调拨 <b>' + fmtCny(O.transfer) + '</b>');
+    else if (O.shortWin > 0.5) actTxt.push('OD 额度缺 <b>' + fmtCny(O.shortWin) + '</b> 且无钱可调 ⚠');
+    if (d.baList.length) actTxt.push('催 BA ' + d.baList.length + ' 项');
+  }
   if (c.unmatched.length) actTxt.push('关联 ' + c.unmatched.length + ' 个编码');
-  if (c.grantWarn.filter(w => w.msg).length) actTxt.push('催 BA ' + c.grantWarn.filter(w => w.msg).length + ' 项');
   $('#summaryBar').innerHTML =
-    '执行率 <b>' + fmtPct(c.execRate) + '</b> → 预计年底 <b>' + fmtPct(c.forecastRate) + '</b>（目标 ' + fmtPct(m.execRateTarget) + '，' + gapTxt + '）' +
+    '执行率 <b>' + fmtPct(c.execRate) + '</b>' + (d ? ' → 预计年底 <b>' + fmtPct(c.forecastRate) + '</b>（达标来源 ' + d.hit + '/' + d.assessed + '，' + gapTxt + '）' : (c.curM > 12 ? '（本年度已结束）' : '')) +
     (actTxt.length ? '<br>本周期：' + actTxt.join(' · ') : '<br>本周期无必做动作，保持节奏月底再导一次数据。') +
     (c.snap ? '<span style="opacity:.8;font-size:12px">　数据截至 ' + c.snap.date + '</span>' : '');
 
   /* ---- ① 进展 ---- */
   const kpi = (label, value, sub, cls) => '<div class="kpi"><div class="kpi-label">' + label + '</div><div class="kpi-value ' + (cls || '') + '">' + value + '</div><div class="kpi-sub">' + (sub || '') + '</div></div>';
-  const rateCls = c.execRate == null ? '' : (c.execRate >= m.execRateTarget ? 'c-green' : (c.execRate >= c.timeProg - 0.05 ? 'c-blue' : 'c-red'));
-  const foreCls = c.forecastRate == null ? '' : (c.forecastRate >= m.execRateTarget ? 'c-green' : 'c-red');
+  const tgtAll = c.weightedTarget != null ? c.weightedTarget : m.execRateTarget;
+  const rateCls = c.execRate == null ? '' : (c.execRate >= tgtAll ? 'c-green' : (c.execRate >= c.timeProg * tgtAll - 0.05 ? 'c-blue' : 'c-red'));
+  const foreCls = c.forecastRate == null ? '' : (c && d && d.assessed > 0 && d.hit >= d.assessed ? 'c-green' : (c.forecastRate >= tgtAll ? 'c-green' : 'c-red'));
   const grantCls = c.grantProg == null ? '' : (c.grantProg >= c.timeProg - 0.1 ? 'c-green' : 'c-red');
   const itwRemain = sum(c.codes, x => c.per[x].itwRemain), odRemain = c.remainTotal - itwRemain;
   $('#nowProgress').innerHTML =
     '<div class="kpi-grid">' +
-    kpi('执行率', fmtPct(c.execRate), '目标 ' + fmtPct(m.execRateTarget) + ' · 时间 ' + fmtPct(c.timeProg) + ' · 已执行 ' + fmtCny(c.execTotal), rateCls) +
-    kpi('预计年底', fmtPct(c.forecastRate), 'PO预测 ' + fmtCny(c.poFuture) + ' + OD ' + fmtCny(c.odFuture), foreCls) +
+    kpi('执行率', fmtPct(c.execRate), '已执行 ' + fmtCny(c.execTotal) + ' · 时间进度 ' + fmtPct(c.timeProg), rateCls) +
+    kpi('预计年底', fmtPct(c.forecastRate), d ? 'PO ' + fmtCny(c.poFuture) + ' + OD ' + fmtCny(c.odFuture) + (d.temp.total > 0 ? ' · 补临时OD后 ' + fmtPct(c.planCnyTotal > 0 ? d.withTemp / c.planCnyTotal : null) : '') : '团队照常干、不额外加人', foreCls) +
+    kpi('加权目标', fmtPct(c.weightedTarget), '各来源目标按规划加权' + (c.plansY.some(x => !x.dead && x.target === 0) ? ' · 含不考核来源' : '')) +
     kpi('授予进度', fmtPct(c.grantProg), fmtCny(c.availTotal) + ' / ' + fmtCny(c.planCnyTotal) + ' · 时间 ' + fmtPct(c.timeProg), grantCls) +
-    kpi('当前可支配', fmtCny(c.remainTotal), 'IT外包 ' + fmtCny(itwRemain) + ' · OD ' + fmtCny(odRemain), c.remainTotal < c.poFrozen ? 'c-amber' : '') +
-    kpi('在途冻结', fmtCny(c.poFrozen), c.openCnt + ' 个未关闭 PO · 预计返还 ' + fmtCny(c.poReturn)) +
-    kpi('规划（万美金）', fmtWusd(sum(c.plansY.filter(x => !x.dead), wusdOf)), '汇率 ' + c.fx + (c.plansY.some(x => x.dead) ? ' · 含失效 ' + fmtWusd(sum(c.plansY.filter(x => x.dead), wusdOf)) : '')) +
+    kpi('当前可支配', fmtCny(c.remainTotal), 'IT外包 ' + fmtCny(itwRemain) + ' · OD ' + fmtCny(odRemain) + (d && d.od.excessOd > 10000 ? ' · 多余OD额度 ' + fmtCny(d.od.excessOd) : ''), d && d.fund.short > 0 ? 'c-red' : '') +
+    kpi('在途冻结', fmtCny(c.poFrozen), c.openCnt + ' 张未关闭 PO · 验收后返还 ' + fmtCny(c.poReturn), c.poReturn > 0 ? 'c-amber' : '') +
     '</div>' +
-    '<div style="margin-top:10px">' + execRowHtml('总体', c.execRate, m.execRateTarget, c.timeProg, c.forecastRate) +
-    c.codes.slice(0, 6).map(code => {
-      const s = c.per[code];
-      const nm = (s.plan && s.plan.dead ? s.plan.name + '（失效）' : (s.plan ? s.plan.name : s.name + '⚠️'));
-      return execRowHtml(nm, s.execRate, s.target, c.timeProg, (s.plan && s.plan.dead) ? '预算下不来' : (s.target === 0 ? '不考核' : null));
+    '<div style="margin-top:10px">' + execRowHtml('总体', c.execRate, tgtAll, c.timeProg, d ? c.forecastRate : null) +
+    (d ? d.rows.slice(0, 8) : []).map(r => {
+      const nm = r.notGranted ? r.name + '（未到账）' : (r.unmatched ? r.name + ' ⚠️未关联' : r.name);
+      const fore = !r.assessed ? (r.unmatched ? '未关联规划' : '不考核') : (r.notGranted ? '平台未到账' : '预计年底 ' + fmtPct(r.rate) + (r.temp > 0 ? ' → 补OD后 ' + fmtPct(r.rateWithTemp) : ''));
+      return execRowHtml(nm, r.planCny ? r.exec / r.planCny : null, r.assessed || r.notGranted ? r.target : null, c.timeProg, fore, r.assessed ? r.rate : null);
     }).join('') +
-    (c.codes.length > 6 ? '<div class="muted" style="padding:4px 0">…共 ' + c.codes.length + ' 个预算来源，完整列表见下方「执行率明细」</div>' : '') + '</div>' +
-    '<div class="muted" style="margin-top:4px">ℹ️ ' + esc(c.odAsOfText || '') + '</div>';
+    (d && d.rows.length > 8 ? '<div class="muted" style="padding:4px 0">…共 ' + d.rows.length + ' 个来源，完整推演见下方决策卡</div>' : '') + '</div>' +
+    '<div class="muted" style="margin-top:4px">ℹ️ ' + esc(c.odAsOfText || '') + (d ? '　执行率的考核线是各来源自己的目标；总体目标 = 各来源目标按规划金额加权。' : '') + '</div>';
 
   /* ---- ② 风险 ---- */
   const risks = [];
-  if (c.forecastRate != null && c.forecastRate < m.execRateTarget)
-    risks.push(['red', '达标风险', '预测年底 ' + fmtPct(c.forecastRate) + ' &lt; 目标 ' + fmtPct(m.execRateTarget) + '，缺口 ' + fmtCny(m.execRateTarget * c.planCnyTotal - c.forecastEnd) + '（PO 预测 ' + fmtCny(c.poFuture) + ' + OD 估算 ' + fmtCny(c.odFuture) + ' 之后的差）']);
+  if (d && d.fund.short > 0) risks.push(['red', '团队资金不足', '剩余团队 PO ' + fmtCny(d.fund.poNeed) + ' + 常规 OD 扣减 ' + fmtCny(d.fund.odNeed) + ' > 可支配 ' + fmtCny(d.fund.total) + '，缺 <b>' + fmtCny(d.fund.short) + '</b>' + (d.fund.month ? '，钱在 <b>' + d.fund.month + '</b>耗尽' : '') + '——催 BA 尽快到账']);
+  if (c.odOverList.length) risks.push(['red', 'OD 额度已不足', c.odOverList.map(code => esc((c.per[code].plan ? c.per[code].plan.name : c.per[code].name)) + ' OD 已执行 ' + fmtCny(c.per[code].odExec) + ' > 可用 ' + fmtCny(c.per[code].odAvail)).join('；') + '——立即调拨，否则会落到「费用先结算至PO受益部门」']);
+  if (d && d.assessed > 0 && (d.hit < d.assessed || (c.forecastRate != null && c.weightedTarget != null && c.forecastRate < c.weightedTarget)))
+    risks.push(['red', '达标风险', '按当前推演 <b>' + (d.assessed - d.hit) + '</b> 个考核来源不达标' + (c.weightedTarget != null ? '（预计总体 ' + fmtPct(c.forecastRate) + ' vs 加权目标 ' + fmtPct(c.weightedTarget) + '）' : '') + (d.temp.total > 0 ? '；其中 <b>' + fmtCny(d.temp.total) + '</b> 可用年底临时 OD 补上' : '') + '，见决策卡']);
   if (c.checks.length)
     risks.push(['red', '两表不符', 'PO明细汇总与执行表有 ' + c.checks.length + ' 项对不上（最大差额 ' + fmtCny(Math.max(...c.checks.map(k => Math.abs(k.diff)))) + '），见底部校验卡']);
   if (c.unmatched.length)
     risks.push(['red', '编码未关联', c.unmatched.length + ' 个预算来源（' + c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '）未关联规划，执行率分母不准']);
   if (c.grantProg != null && c.grantProg < c.timeProg - 0.1)
     risks.push(['amber', '授予落后', '授予进度 ' + fmtPct(c.grantProg) + ' 落后时间进度 ' + fmtPct(c.timeProg) + '，差 ' + fmtCny(c.planCnyTotal * c.timeProg - c.availTotal) + '——催 BA']);
-  c.grantWarn.filter(w => w.msg).forEach(w => risks.push(['amber', '授予明细', esc(w.name) + '：' + esc(w.msg)]));
+  c.importNotes.filter(n => n && n.text).forEach(n => risks.push(['amber', '导入提醒', esc(n.text)]));
+  if (d) d.baList.forEach(b => risks.push(['amber', '来源缺钱', esc(b.name) + '：缺口 ' + fmtCny(b.short) + '（' + b.kind + '），只靠 PO 消化最晚 <b>' + b.latest + ' 月</b>到账——催 BA']));
   if (c.curM === 5 || c.curM === 11)
     risks.push(['amber', '清算月', (c.curM === 5 ? '6' : '12') + ' 月底 OD 大额清算' + (c.curM === 11 ? '（含年终奖约 ' + (m.bonusMonths || 3.5) + ' 个月月均）' : '') + '，确认 OD 额度是否够']);
+  if (d && d.od.transfer > 0) risks.push(['amber', 'OD 额度不足', '到 ' + odLabel + ' 还需扣 ' + fmtCny(d.od.winNeed) + '，现有额度 ' + fmtCny(d.od.have) + '，<b>本次调拨 ' + fmtCny(d.od.transfer) + '</b>' + (c.hasProj ? '（花钱项目 ' + esc(d.od.proj) + ' 内）' : '')]);
+  else if (d && d.od.shortWin > 0.5) risks.push(['red', 'OD 额度不足且无钱可调', '到 ' + odLabel + ' 需扣 ' + fmtCny(d.od.winNeed) + '，现有额度 ' + fmtCny(d.od.have) + '，IT外包 剩余里没有钱可调，缺 <b>' + fmtCny(d.od.shortWin) + '</b>——月底扣减会落到「费用先结算至PO受益部门」，先催 BA 到账或催验收返还']);
+  if (d && d.inflight.fc > 0 && d.inflight.fc < d.inflight.need * 0.95) risks.push(['amber', '当月 PO 不够', '当月在执行的 PO 预测 ' + fmtCny(d.inflight.fc) + ' < 团队当月需求 ' + fmtCny(d.inflight.need) + '，差 ' + fmtCny(d.inflight.need - d.inflight.fc) + '——需要补一张 PO']);
+  if (d && d.inflight.over > 0) risks.push(['amber', '当月多下', '当月在执行的 PO 预测 ' + fmtCny(d.inflight.fc) + '，团队当月需求约 ' + fmtCny(d.inflight.need) + '，预计多下 <b>' + fmtCny(d.inflight.over) + '</b>（' + fmtPct(d.inflight.over / d.inflight.fc) + '），验收后才能回来']);
+  if (d && d.yearEnd && J.short > 0) risks.push(['amber', '1 月 PO 缺口', '达标后的结余只够 1 月 PO ' + fmtCny(J.reserve) + '，需求 ' + fmtCny(J.need) + '，缺 <b>' + fmtCny(J.short) + '</b>——调低某来源目标 ' + fmtCny(J.short) + ' 即可补足（目标由你权衡）']);
+  if (d && d.yearEnd && d.unspent > 10000 && J.short <= 0) risks.push(['amber', '花不掉的余量', '达标并留足 1 月 PO 后仍有 <b>' + fmtCny(d.unspent) + '</b> 花不掉——年底临时加 OD / 找别人花 / 调低目标']);
+  if (d && d.yearEnd && d.od.excessOd > 10000) risks.push(['amber', '多余 OD 额度', 'OD 额度 ' + fmtCny(c.odRemainTotal) + ' 多于到年底的扣减 ' + fmtCny(c.odFuture) + '，多出 <b>' + fmtCny(d.od.excessOd) + '</b> 年底前调回 IT外包，否则花不掉']);
+  if (c.poReturn > 0) risks.push(['amber', '在途冻结', c.openCnt + ' 张 PO 冻结 ' + fmtCny(c.poFrozen) + '，验收后返还 <b>' + fmtCny(c.poReturn) + '</b>（明细见 PO 台账「在途与返还」）' + (d && d.yearEnd ? '——12 月 15 日前完成验收，返还的钱才能用于 1 月 PO' : '——验收周期约 1 个月')]);
   if (c.team.poGroups.length && Math.abs(c.team.calibPo || 0) > 0.1)
-    risks.push(['amber', '团队校准', 'PO 理论月度与历史实际偏差 ' + fmtPct(c.team.calibPo) + '（理论 ' + fmtCny(c.team.theoryPo(Math.max(c.curM, 1))) + ' vs 近3月实际 ' + fmtCny(c.poAvg) + '），检查人数/单价/出勤系数']);
+    risks.push(['amber', '团队校准', 'PO 理论月度与历史实际偏差 ' + fmtPct(c.team.calibPo) + '（理论 ' + fmtCny(c.team.theoryPo(Math.max(Math.min(c.curM, 12), 1))) + ' vs 近3月实际 ' + fmtCny(c.poAvg) + '），检查人数/单价/出勤系数']);
   if (c.team.odGroups.length && Math.abs(c.team.calibOd || 0) > 0.1)
     risks.push(['amber', '团队校准', 'OD 理论月度与历史实际偏差 ' + fmtPct(c.team.calibOd) + '（理论 ' + fmtCny(c.team.theoryOd) + ' vs 近3月实际 ' + fmtCny(c.odAvg) + '）']);
   if (state.team.length) {
@@ -1448,109 +1759,119 @@ function renderNow() {
     if (days == null || days > 35) risks.push(['amber', '人数待确认', '团队人数经常变化，距上次确认' + (days == null ? '从未' : '已 ' + days + ' 天') + '，请核对团队配置']);
   }
   if (c.curM <= 3 && c.po) {
-    const crossPO = c.po.rows.filter(r => r.startDate && +String(r.startDate).slice(0, 4) === Y - 1 && +String(r.startDate).slice(5, 7) === 12);
+    const crossPO = c.po.rows.filter(r => r.startDate && +String(r.startDate).slice(0, 4) === Y && +String(r.startDate).slice(5, 7) === 1);
     const crossAmt = sum(crossPO, r => sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0));
-    if (crossAmt > 0) risks.push(['info', '跨年PO', '本年执行含 <b>' + fmtCny(crossAmt) + '</b> 跨年 PO（上年 12 月服务、今年 1 月下单）——平台口径如此，属正常，勿当本年新增消耗追账']);
+    if (crossAmt > 0) risks.push(['info', '1 月 PO', '本年执行含 <b>' + fmtCny(crossAmt) + '</b> 的 1 月 PO（去年 12 月下旬下单、用去年结余）——按费用起始时间计入今年，属正常']);
   }
-  if (c.curM >= 11) risks.push(['info', '落账节奏', '12 月服务的 PO 要到下年 1 月下单、计入<b>下年</b>执行——冲今年执行率只能靠年内可执行完的 PO 和 OD 年终清算']);
+  if (c.curM >= 11 && d) risks.push(['info', '落账节奏', '冲今年执行率只能靠年内能执行完的 PO 和 12 月 31 日的 OD 清算；12 月下旬下的 1 月 PO 用今年的结余、计入明年']);
   const freq = state.meta.updateFreqDays || 14;
   ['po', 'exec'].forEach(k => {
-    const d = (state.updatedAt || {})[k];
-    const days = d ? daysBetween(d, todayStr()) : null;
+    const dd = (state.updatedAt || {})[k];
+    const days = dd ? daysBetween(dd, todayStr()) : null;
     if (days == null || days > freq) risks.push(['amber', '数据过期', (k === 'po' ? 'PO明细' : '执行表') + (days == null ? '未导入' : '已 ' + days + ' 天未更新')]);
   });
   $('#nowRisk').innerHTML = risks.length
     ? risks.map(([lv, tag, txt]) => '<div class="risk-item"><span class="risk-lv ' + lv + '">' + (lv === 'red' ? '!' : lv === 'amber' ? '·' : lv === 'info' ? 'i' : '✓') + '</span><div><b>' + tag + '</b>　' + txt + '</div></div>').join('')
     : '<div class="risk-item"><span class="risk-lv green">✓</span><div><b>暂无风险</b>　执行进度、数据一致性、授予进度均正常</div></div>';
 
-  /* ---- Ⓣ 下PO决策卡 ---- */
-  {
-    const d = c.poDecision;
-    const box = $('#poDecisionBox'), sub = $('#poDecisionSub');
-    if (!d) {
-      sub.textContent = '';
-      box.innerHTML = '<div class="empty">导入数据后展示建议</div>';
-    } else {
-      sub.textContent = '为 ' + d.nextM + ' 月 PO（' + d.wd + ' 个工作日）· 决策点 ' + c.curM + '月18-19日';
-      const tier = (label, val, note, cls) =>
-        '<div class="kpi" style="' + (cls || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + fmtCny(val) + '</div><div class="kpi-sub">' + note + '</div></div>';
-      // 新版：按来源决策表
-      {
-        const d = c.poDecision;
-        const tier = (label, val, note, cls) =>
-          '<div class="kpi" style="' + (cls || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + fmtCny(val) + '</div><div class="kpi-sub">' + note + '</div></div>';
-        let html = '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">' +
-          tier('① 12月PO·补达标', d.totalDecPO, '各来源补齐目标缺口', 'border:2px solid var(--blue);background:var(--blue-bg)') +
-          tier('② OD调拨', d.totalOdXfer, '12月31日清算 ' + fmtCny(d.odDecNeed) + '（含年终）', 'border:1px solid var(--teal)') +
-          tier('③ 1月PO·保团队', d.totalJanPO, d.janWd + '工作日需求 ' + fmtCny(d.janNatural) + (d.janShort > 0 ? ' <b style="color:var(--red)">缺' + fmtCny(d.janShort) + '</b>' : ' ✓'), d.janShort > 0 ? 'border:2px solid var(--red)' : '') +
-          tier('④ 执行不了的剩余', d.totalUnspent, d.totalUnspent > 1000 ? '→ 调低目标 / 加OD人 / 留1月' : '已充分利用 ✓', d.totalUnspent > 1000 ? 'color:var(--red)' : 'color:var(--green)') +
-          '</div>';
-
-        // 分来源明细表
-        html += '<div style="margin-top:12px"><b style="font-size:13px">各预算来源决策明细</b></div>' +
-          '<table class="tbl"><thead><tr>' +
-          '<th>预算来源</th><th class="num">规划</th><th class="num">目标</th><th class="num">已执行+预测</th>' +
-          '<th class="num">12月PO</th><th class="num">OD调拨</th><th class="num">1月PO</th>' +
-          '<th class="num">预计执行率</th><th class="num">达标后余</th><th>状态</th>' +
-          '</tr></thead><tbody>';
-        d.srcRows.forEach(r => {
-          const rateTxt = r.target === 0 ? '—' : fmtPct(r.finalRate);
-          const tgtTxt = r.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(r.target);
-          const status = r.target === 0 ? '<span class="muted">—</span>' :
-            (r.hitTarget ? '<span style="color:var(--green)">✓达标</span>' :
-              '<span style="color:var(--red)">✗差' + fmtCny(r.gap) + '</span>');
-          html += '<tr' + (r.decPO > 0 ? ' style="background:var(--blue-bg)"' : '') + '>' +
-            '<td><b>' + esc(r.name) + '</b></td>' +
-            '<td class="num">' + fmtCny(r.planCny) + '</td>' +
-            '<td class="num">' + tgtTxt + '</td>' +
-            '<td class="num">' + fmtCny(r.execNow + r.fc) + '</td>' +
-            '<td class="num">' + (r.decPO > 0 ? '<b style="color:var(--blue)">' + fmtCny(r.decPO) + '</b>' : '—') + '</td>' +
-            '<td class="num">' + (r.odXfer > 0 ? fmtCny(r.odXfer) : '—') + '</td>' +
-            '<td class="num">' + (r.janPO > 0 ? fmtCny(r.janPO) : '—') + '</td>' +
-            '<td class="num">' + rateTxt + '</td>' +
-            '<td class="num">' + (r.after > 1000 ? fmtCny(r.after) : '—') + '</td>' +
-            '<td>' + status + '</td></tr>';
-        });
-        const totExec = sum(d.srcRows, r => r.execNow + r.fc + r.decPO + (r.odXfer || 0));
-        const totPlan = sum(d.srcRows, r => r.planCny);
-        html += '</tbody><tfoot><tr>' +
-          '<td>合计</td><td class="num">' + fmtCny(totPlan) + '</td><td class="num">—</td>' +
-          '<td class="num">' + fmtCny(sum(d.srcRows, r => r.execNow + r.fc)) + '</td>' +
-          '<td class="num">' + fmtCny(d.totalDecPO) + '</td>' +
-          '<td class="num">' + fmtCny(d.totalOdXfer) + '</td>' +
-          '<td class="num">' + fmtCny(d.totalJanPO) + '</td>' +
-          '<td class="num">' + (totPlan > 0 ? fmtPct(totExec / totPlan) : '—') + '</td>' +
-          '<td class="num">' + fmtCny(d.totalUnspent) + '</td><td></td></tr></tfoot></table>';
-
-        // 风险提示
-        if (d.janShort > 0) html += '<div class="cons-diff warn" style="margin-top:6px">⚠ <b>1月PO缺口 ' + fmtCny(d.janShort) + '</b>——按当前目标分配后剩余不够1月整月团队需求。取舍：<br>① 调低某项目标（腾出剩余）② 1月先下半月等新预算 ③ OD侧挪</div>';
-        if (d.totalUnspent > 10000) html += '<div class="cons-diff warn" style="margin-top:6px">⚠ <b>' + fmtCny(d.totalUnspent) + ' 执行不了</b>——PO+OD都吃不掉。选项：<br>① 增加OD人数（每加1人约多执行 ' + fmtCny(c.team && c.team.odGroups.length ? Math.round(c.team.theoryOd / Math.max(sum(c.team.odGroups, g => g.headcount), 1)) : 25000) + '）② 调低目标 ③ 留给1月PO</div>';
-        const notHit = d.srcRows.filter(r => r.target > 0 && !r.hitTarget);
-        if (notHit.length) html += '<div class="cons-diff info" style="margin-top:6px">ℹ️ ' + notHit.length + ' 个来源未达标（' + notHit.map(r => esc(r.name) + ' 差' + fmtCny(r.gap)).join('、') + '）——检查：授予是否到位（催BA）、目标是否合理</div>';
-
-        box.innerHTML = html;
-      }
-
+  /* ---- Ⓣ 本周期操作与决策 ---- */
+  const box = $('#poDecisionBox'), sub = $('#poDecisionSub');
+  if (!d) {
+    sub.textContent = '';
+    box.innerHTML = '<div class="empty">' + (c.curM > 12 ? '本年度已结束，无待下 PO。' : '导入执行表和 PO 明细后展示本周期操作') + '</div>';
+  } else {
+    sub.textContent = (d.isDec ? '12 月下旬下 1 月 PO' : P ? '为 ' + P.nextM + ' 月 PO（' + P.wd + ' 个工作日）· 决策点 ' + c.curM + '月18-19日' : '') + (c.snap ? ' · 数据截至 ' + c.snap.date : '');
+    const tile = (label, val, note, cls, style) =>
+      '<div class="kpi" style="' + (style || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value ' + (cls || '') + '">' + val + '</div><div class="kpi-sub">' + note + '</div></div>';
+    const odBackNote = items => items.some(x => x.odBack > 0) ? ' <span class="muted">（其中 ' + fmtCny(sum(items, x => x.odBack)) + ' 需先把 OD 额度调回 IT外包）</span>' : '';
+    let html = '';
+    /* ⓪ 调账：往月未关闭的 PO，已执行额可在预算项之间调整 */
+    if (d.adjust.length) html += '<div class="ins" style="border-left-color:var(--purple)"><div class="ins-head">⓪ <b>调账 ' + fmtCny(sum(d.adjust, x => x.amt)) + '</b>：往月未关闭的 PO 里，把已执行额从富余的来源调给缺的来源</div>' +
+      d.adjust.map(x => '<div class="ins-sub">' + esc(x.poNo) + '：把 <b>' + fmtCny(x.amt) + '</b> 从「' + esc(x.fromName) + '」调到「' + esc(x.toName) + '」' + (c.hasProj ? '（花钱项目 ' + esc(x.proj) + ' 内）' : '') + '</div>').join('') +
+      '<div class="ins-sub">平台口径：往月未关闭的 PO，已执行额可以在预算项之间调减/调增，PO 总执行额不变；已关闭的 PO 是定稿。验收前做完即可，不用新钱。预算来源页可看到调账前后各来源的执行额。</div></div>';
+    /* ① PO */
+    if (d.isDec) {
+      html += '<div class="ins"><div class="ins-head">① 下旬下 <b>1 月 PO</b>：' + fmtCny(J.toIssue) + '</div>' +
+        '<div class="ins-sub">日额 ' + fmtCny(c.team.poDaily) + ' × 明年 1 月 ' + J.wd + ' 个工作日 × 出勤 ' + (c.team.attend) + (d.calibR !== 1 ? ' × 校准 ' + d.calibR.toFixed(3) : '') + '　｜　按当前单价估算，新一年单价调整后重算</div>' +
+        (J.alloc.length ? '<div class="ins-sub">从这些钱包出：' + J.alloc.map(x => wl(x) + ' ' + fmtCny(x.amt) + (x.fromRef ? '<span class="muted">（验收返还后）</span>' : '')).join('、') + '</div>' : (J.toIssue > 0 ? '<div class="ins-sub" style="color:var(--red)">没有可用的钱——达标后的结余不够</div>' : '')) +
+        '<div class="ins-sub">' + (J.short > 0 ? '<span style="color:var(--red)">1 月 PO 缺 ' + fmtCny(J.short) + '：调低任一考核来源的目标 ' + fmtCny(J.short) + ' 即可补足（目标由你权衡）</span>' : '✓ 今年的结余够 1 月整月，团队不断档' + (J.fromRefund > 0 ? '（其中 ' + fmtCny(J.fromRefund) + ' 要等往月 PO 在 12 月 15 日前验收返还后才有）' : '')) + '　｜　参考区间 ' + fmtCny(Math.max(0, J.need - c.team.poDaily * 0.5)) + ' ~ ' + fmtCny(J.need) + '（年底不多下）</div></div>';
+    } else if (P) {
+      const basis = '日额 ' + fmtCny(c.team.poDaily) + ' × ' + P.wd + ' 个工作日 × 出勤 ' + c.team.attend + (d.calibR !== 1 ? ' × 校准 ' + d.calibR.toFixed(3) : '') + ' = ' + fmtCny(P.need) + (P.histNext > 0 ? '　｜　近 3 月实际折算 ' + fmtCny(P.histNext) : '') + '　｜　参考区间 ' + fmtCny(P.low) + ' ~ ' + fmtCny(P.high) + (d.yearEnd ? '（年底按需求下满，不多下）' : '');
+      if (P.toIssue <= 0) html += '<div class="ins ok"><div class="ins-head">✓ ' + P.nextM + ' 月 PO 已下齐（已下 ' + fmtCny(P.issued) + '）</div><div class="ins-sub">团队需求 ' + fmtCny(P.need) + '</div></div>';
+      else html += '<div class="ins">' +
+        '<div class="ins-head">① 20 号前下 <b>' + P.nextM + ' 月 PO</b>：' + fmtCny(P.toIssue) + (P.issued > 0 ? '<span class="muted">（需求 ' + fmtCny(P.need) + '，已下 ' + fmtCny(P.issued) + '）</span>' : '') + '</div>' +
+        '<div class="ins-sub">' + basis + '</div>' +
+        (P.alloc.length ? '<div class="ins-sub">从这些钱包出：' + P.alloc.map(x => wl(x) + ' ' + fmtCny(x.amt)).join('、') + odBackNote(P.alloc) + '　｜　' + (c.hasProj ? '涉及 ' + P.projs.length + ' 个花钱项目、' : '') + new Set(P.alloc.map(x => x.code)).size + ' 个来源' + (c.hasProj ? '' : '（执行表放进项目子文件夹重新导入后，可区分花钱项目）') + (d.fund.short > 0 && P.funded < P.toIssue ? '　<span style="color:var(--red)">其中 ' + fmtCny(P.toIssue - P.funded) + ' 没有钱可出</span>' : '') + '</div>'
+          : '<div class="ins-sub" style="color:var(--red)">可支配的钱不够，这张 PO 没有钱包可出——先催 BA / 催验收</div>') +
+        '<div class="ins-sub muted">这些钱包怎么分到你当月的两张 PO 上，由你按习惯定。</div></div>';
     }
+    /* ② OD */
+    if (O.shortWin > 0.5) html += '<div class="ins" style="border-left-color:var(--red)"><div class="ins-head">② <b style="color:var(--red)">OD 额度不够，且没有钱可调：缺 ' + fmtCny(O.shortWin) + '</b></div>' +
+      '<div class="ins-sub">到 ' + odLabel + ' 需扣 ' + fmtCny(O.winNeed) + '，现有 OD 额度 ' + fmtCny(O.have) + '；各钱包的 IT外包 剩余已被 PO 占用，没有钱可调——月底扣减会落到「费用先结算至PO受益部门」</div>' +
+      '<div class="ins-sub">先催 BA 到账或催验收返还；也可以少下一点 PO（参考区间下限 ' + fmtCny(P ? P.low : 0) + '）把额度让给 OD</div></div>';
+    else if (O.transfer > 0) html += '<div class="ins"><div class="ins-head">② <b>OD 调拨 ' + fmtCny(O.transfer) + '</b>（IT外包 → OD）</div>' +
+      (O.wallets.length ? '<div class="ins-sub">' + (c.hasProj ? '在花钱项目 <b>' + esc(O.proj) + '</b> 内：' : '') + O.wallets.map(x => wl(x) + ' ' + fmtCny(x.amt)).join('、') + '</div>' : '') +
+      '<div class="ins-sub">到 ' + odLabel + ' 需扣 ' + fmtCny(O.winNeed) + '，现有 OD 额度 ' + fmtCny(O.have) + (O.otherProj ? '　<span style="color:var(--amber)">该项目不够，需动用另一个花钱项目</span>' : '') + '　｜　调后本窗口不用再调</div></div>';
+    else html += '<div class="ins ok"><div class="ins-head">✓ OD 额度够用，本月不用调</div><div class="ins-sub">到 ' + odLabel + ' 需扣 ' + fmtCny(O.winNeed) + '，现有 ' + fmtCny(c.odRemainTotal) + (O.excessOd > 10000 ? '　｜　<span style="color:var(--amber)">多出 ' + fmtCny(O.excessOd) + ' 年底前调回 IT外包，否则花不掉</span>' : '') + '</div></div>';
+    /* ③ 催 BA */
+    if (d.baList.length) html += '<div class="ins"><div class="ins-head">③ 催 BA：' + d.baList.length + ' 个来源缺钱</div>' +
+      d.baList.map(b => '<div class="ins-sub">' + esc(b.name) + ' 缺 <b>' + fmtCny(b.short) + '</b>（' + b.kind + '）' + (b.latest ? '，只靠 PO 消化最晚 <b>' + b.latest + ' 月</b>到账' : '') + '</div>').join('') + '</div>';
+    /* 本月识别：在途 */
+    const I = d.inflight;
+    if (I.fc > 0) html += '<div class="ins-sub" style="margin-top:8px">本月识别：在执行 PO 的预测合计 ' + fmtCny(I.fc) + '（' + I.bySrc.map(x => esc(shortName(x.name)) + ' ' + fmtCny(x.fc)).join('、') + '）→ 预计执行 <b>' + fmtCny(I.willExec) + '</b>' + (I.over > 0 ? '，多下 <b style="color:' + (I.over / I.fc > 0.05 ? 'var(--red)' : 'var(--amber)') + '">' + fmtCny(I.over) + '</b>（冻结，下月验收后返还）' : '') + (I.fc < I.need * 0.95 ? '，<b style="color:var(--red)">比团队需求少 ' + fmtCny(I.need - I.fc) + '</b>' : '') + '</div>';
+    /* 年底推演 */
+    if (d.yearEnd) {
+      const miss = d.rows.filter(r => r.assessed && !r.hit);
+      html += '<div class="ye"><div class="ye-title">年底推演<span class="muted">（不是本月动作，提前看结果；按上面的指令执行后）</span></div>' +
+        '<div class="kpi-grid" style="margin-top:6px">' +
+        tile('达标来源', d.hit + ' / ' + d.assessed, miss.length ? '未达标：' + miss.slice(0, 3).map(r => esc(r.name) + ' 差 ' + fmtCny(r.gapLeft)).join('、') + (miss.length > 3 ? '…' : '') : '全部达标 ✓', miss.length ? 'c-amber' : 'c-green') +
+        tile('预计总体执行率', fmtPct(c.forecastRate), '加权目标 ' + fmtPct(d.weightedTarget) + (d.temp.total > 0 ? ' · 补临时OD后 ' + fmtPct(c.planCnyTotal > 0 ? d.withTemp / c.planCnyTotal : null) : ''), d.hit >= d.assessed ? 'c-green' : 'c-red') +
+        tile('1 月 PO', fmtCny(J.reserve), '需求 ' + fmtCny(J.need) + (J.short > 0 ? '，<b style="color:var(--red)">缺 ' + fmtCny(J.short) + '</b>' : ' ✓ 够') + (J.fromRefund > 0 ? '，含验收返还 ' + fmtCny(J.fromRefund) : ''), J.short > 0 ? 'c-red' : 'c-green') +
+        tile('验收后返还', fmtCny(c.poReturn), '冻结 ' + fmtCny(c.poFrozen) + (d.refundPast > 0 ? ' · 往月 PO 的 ' + fmtCny(d.refundPast) + ' 在 12 月 15 日前验收后可用于临时 OD / 1 月 PO' : ' · 12 月 15 日前完成验收'), c.poReturn > 0 ? 'c-amber' : '') +
+        '</div>' +
+        (d.temp.total > 0 ? '<div class="ins-sub">临时 OD 补缺口：<b>' + fmtCny(d.temp.total) + '</b>' + (d.temp.fromRefund > 0 ? '<span style="color:var(--amber)">（其中 ' + fmtCny(d.temp.fromRefund) + ' 需往月 PO 验收返还后才有）</span>' : '') + (d.temp.people ? '（约合 ' + d.temp.people + ' 人，12 月清算前到岗）' : '') + ' ← ' + d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt)).join('、') + '</div>' : (miss.length ? '<div class="ins-sub">未达标的来源没有可用的钱补临时 OD——只能催 BA 或调低目标</div>' : '')) +
+        (d.unspent > 10000 && J.short <= 0 ? '<div class="ins-sub">达标并留足 1 月 PO 后仍有 <b>' + fmtCny(d.unspent) + '</b> 花不掉：年底临时加 OD / 找别人花 / 调低目标</div>' : '') +
+        '</div>';
+    }
+    /* 分来源推演表（折叠） */
+    const yes = v => v > 0 ? fmtCny(v) : '<span class="muted">—</span>';
+    html += '<details class="fold"' + (foldOpen ? ' open' : '') + '><summary>分来源推演表（' + d.rows.length + ' 个来源，从现在推到 12 月 31 日）</summary><div class="tbl-wrap"><table class="tbl"><thead><tr>' +
+      '<th>预算来源</th><th class="num">规划</th><th class="num">目标</th><th class="num">已执行</th><th class="num">在途将执行</th><th class="num">缺口</th><th class="num">可支配</th>' +
+      '<th class="num">后续PO<br><span class="muted">含本月</span></th><th class="num">常规OD</th><th class="num">临时OD</th><th class="num">1月PO</th><th class="num">年底预计</th><th>达标</th><th class="num">余量去向</th></tr></thead><tbody>';
+    d.rows.forEach(r => {
+      const st = !r.assessed ? '<span class="muted">' + (r.unmatched ? '未关联' : '不考核') + '</span>' : r.notGranted ? '<span style="color:var(--red)">未到账</span>' : (r.hit ? '<span style="color:var(--green)">✓</span>' : '<span style="color:var(--red)">✗ 差' + fmtCny(Math.max(0, r.planCny * r.target - r.endExec - r.temp)) + '</span>');
+      const leftTxt = r.jan > 0 ? '留1月 ' + fmtCny(r.jan) : (r.left > 1000 ? '花不掉 ' + fmtCny(r.left) : '<span class="muted">—</span>');
+      html += '<tr' + (r.notGranted ? ' style="opacity:.7"' : '') + '><td><b>' + esc(r.name) + '</b>' + (c.hasProj && r.wallets.length > 1 ? '<div class="muted">' + r.wallets.map(w => esc(w.proj) + ' ' + fmtCny(w.itw + w.od)).join(' / ') + '</div>' : '') + '</td>' +
+        '<td class="num">' + (r.planCny ? fmtCny(r.planCny) : '—') + '</td><td class="num">' + (r.target != null && r.assessed ? fmtPct(r.target) : '—') + '</td>' +
+        '<td class="num">' + fmtCny(r.exec) + (r.adj ? '<div class="muted">调账 ' + (r.adj > 0 ? '+' : '') + fmtCny(r.adj) + '</div>' : '') + '</td><td class="num">' + yes(r.willExec) + '</td><td class="num">' + yes(r.gap) + '</td><td class="num">' + fmtCny(r.funds) + '</td>' +
+        '<td class="num">' + yes(r.po) + (r.poNext > 0 ? '<div class="muted">本月 ' + fmtCny(r.poNext) + '</div>' : '') + '</td><td class="num">' + yes(r.odExec) + (r.odXfer > 0 ? '<div class="muted">需调 ' + fmtCny(r.odXfer) + '</div>' : '') + '</td><td class="num">' + yes(r.temp) + '</td><td class="num">' + yes(r.jan) + '</td>' +
+        '<td class="num">' + (r.planCny ? fmtPct(r.rate) : '—') + '</td><td>' + st + '</td><td class="num">' + leftTxt + '</td></tr>';
+    });
+    html += '</tbody></table></div><div class="muted" style="margin-top:6px">缺口 = 规划×目标 − 已执行 − 在途将执行。后续 PO/常规 OD 先补缺口大的来源；临时 OD 只在年底排；1 月 PO 只用达标后的 IT外包 结余。</div></details>';
+    box.innerHTML = html;
   }
 
   /* ---- ③ 行动清单 ---- */
   const acts = [];
-  if (c.unmatched.length) acts.push({ t: '关联 ' + c.unmatched.length + ' 个新预算来源编码（' + c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '），否则执行率分母不准', btn: 'link:manage', btnTxt: '去关联' });
-  if (c.odAdvice && c.odAdvice.transfer > 0) {
-    const alloc = c.odAdvice.alloc.slice(0, 3).map(x => x.name + ' +' + fmtCny(x.amt)).join(' / ');
-    acts.push({ t: '<b>OD 调拨 ' + fmtCny(c.odAdvice.transfer) + '</b>（IT外包→OD，赶在月底扣减前）' + (alloc ? '，参考分配：' + alloc : '') });
+  if (d) {
+    if (d.adjust.length) acts.push({ t: '<b>调账 ' + fmtCny(sum(d.adjust, x => x.amt)) + '</b>：' + d.adjust.map(x => esc(x.poNo) + ' 从「' + esc(x.fromName) + '」调到「' + esc(x.toName) + '」').join('；') + '（往月未关闭 PO 的已执行额可在预算项间调整，验收前完成，不用新钱）', btn: 'goto:po', btnTxt: '看 PO' });
+    if (d.isDec) { if (J.toIssue > 0) acts.push({ t: '<b>下旬下 1 月 PO ' + fmtCny(J.toIssue) + '</b>' + (J.short > 0 ? '（缺 ' + fmtCny(J.short) + '，见决策卡）' : '') }); }
+    else if (P && P.toIssue > 0) acts.push({ t: '<b>20 号前下 ' + P.nextM + ' 月 PO ' + fmtCny(P.toIssue) + '</b>' + (P.issued > 0 ? '（已下 ' + fmtCny(P.issued) + '）' : '') + (P.alloc.length ? '，从 ' + P.alloc.length + ' 个钱包出，见决策卡' : '（可支配不足，先催 BA/验收）') });
+    if (O.transfer > 0) acts.push({ t: '<b>OD 调拨 ' + fmtCny(O.transfer) + '</b>（' + (c.hasProj ? '花钱项目 ' + esc(O.proj) + ' 内，' : '') + 'IT外包→OD，调后可用到 ' + esc(odLabel) + '）' });
+    else if (O.shortWin > 0.5) acts.push({ t: '<b>OD 额度缺 ' + fmtCny(O.shortWin) + ' 且无钱可调</b>：先催 BA 到账 / 催验收返还，否则月底扣减会落到「费用先结算至PO受益部门」' });
+    d.baList.slice(0, 3).forEach(b => acts.push({ t: '催 BA：<b>' + esc(b.name) + '</b> 缺 ' + fmtCny(b.short) + '（' + b.kind + '），只靠 PO 消化最晚 ' + b.latest + ' 月到账' }));
+    if (d.yearEnd && d.temp.total > 0) acts.push({ t: '安排<b>临时 OD ' + fmtCny(d.temp.total) + '</b>' + (d.temp.people ? '（约合 ' + d.temp.people + ' 人）' : '') + '，12 月清算前到岗：' + d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt)).join('、') });
+    if (d.yearEnd && J.short > 0) acts.push({ t: '1 月 PO 缺 ' + fmtCny(J.short) + '：到「数据管理 → 年初规划」调低某来源目标（每调低 ' + fmtCny(1000) + '，可留就多 ' + fmtCny(1000) + '）', btn: 'goto:data', btnTxt: '去调目标' });
   }
-  if (c.poDecision && c.poDecision.totalDecPO > 0) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>' + fmtCny(c.poDecision.totalDecPO) + '</b>（补达标），OD调拨 ' + fmtCny(c.poDecision.totalOdXfer) + '，明细见决策卡' + (c.poDecision.janShort > 0 ? '；⚠1月PO缺 ' + fmtCny(c.poDecision.janShort) : '') });
-  c.grantWarn.filter(w => w.msg).slice(0, 2).forEach(w => acts.push({ t: '催 BA：<b>' + esc(w.name) + '</b> ' + esc(w.msg) }));
-  if (c.openCnt > 0) acts.push({ t: '催验收：' + c.openCnt + ' 个 OPEN PO 在途冻结 ' + fmtCny(c.poFrozen) + '，预计返还 ' + fmtCny(c.poReturn) + '（验收周期约 1 个月）' });
+  if (c.unmatched.length) acts.push({ t: '关联 ' + c.unmatched.length + ' 个新预算来源编码（' + c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '），否则执行率分母不准', btn: 'link:manage', btnTxt: '去关联' });
+  if (c.poReturn > 0) acts.push({ t: '催验收：' + c.openCnt + ' 张 PO 在途冻结 ' + fmtCny(c.poFrozen) + '，验收后返还 ' + fmtCny(c.poReturn) + '（明细见 PO 台账「在途与返还」' + (d && d.yearEnd ? '；12 月 15 日前完成，返还的钱才能用于 1 月 PO' : '；验收周期约 1 个月') + '）', btn: 'goto:po', btnTxt: '看明细' });
   if (state.team.length) {
     const days = state.meta.lastHcCheck ? daysBetween(state.meta.lastHcCheck, todayStr()) : null;
     if (days == null || days > 35) acts.push({ t: '确认团队人数是否有变化（上次确认：' + (state.meta.lastHcCheck || '从未') + '），有变化请更新团队 Excel 放入数据集文件夹', btn: 'hc:confirm', btnTxt: '人数没变，确认' });
   }
-  if (c.curM === 5 || c.curM === 11) acts.push({ t: '为 ' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算+年终奖') + '做准备：确认 OD 额度充足，' + (c.curM === 5 ? '必要时调拨' : '并校准参数里的年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）') });
-  const stale = ['po', 'exec'].some(k => { const d = (state.updatedAt || {})[k]; const days = d ? daysBetween(d, todayStr()) : null; return days == null || days > freq; });
-  if (stale) acts.push({ t: '导入最新平台数据（4 个文件，按年全量），月底/月初各一次', btn: 'import:open', btnTxt: '导入' });
+  if (c.curM === 5 || c.curM === 11) acts.push({ t: '为 ' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算+年终奖') + '做准备：确认 OD 额度充足' + (c.curM === 5 ? '，必要时调拨' : '，并校准参数里的年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）') });
+  const stale = ['po', 'exec'].some(k => { const dd = (state.updatedAt || {})[k]; const days = dd ? daysBetween(dd, todayStr()) : null; return days == null || days > freq; });
+  if (stale) acts.push({ t: '导入最新平台数据（每个花钱项目的总览 + PO 明细，放进数据集对应子文件夹），月底/月初各一次', btn: 'import:open', btnTxt: '导入' });
   $('#nowActions').innerHTML = acts.length
     ? acts.map((a, i) => {
       const h = actHash(a.t);
@@ -1563,19 +1884,20 @@ function renderNow() {
     : '<div class="empty">本周期无待办——数据最新、无风险项。月底记得再导一次数据存档。</div>';
 
   /* ---- ④ 次要：图表 / 执行率明细 / 授予 / 校验 ---- */
-  let ex = execRowHtml('总体', c.execRate, m.execRateTarget, c.timeProg, c.forecastRate);
+  let ex = execRowHtml('总体', c.execRate, tgtAll, c.timeProg, d ? c.forecastRate : null);
   c.codes.forEach(code => {
     const s = c.per[code];
-    ex += execRowHtml(s.plan ? s.plan.name + '（' + s.name + '）' : s.name + ' [' + code + '] ⚠️未关联', s.execRate, s.target, c.timeProg, s.target === 0 ? '不考核' : null);
+    const r = rowBy[code];
+    ex += execRowHtml(s.plan ? s.plan.name + '（' + s.name + '）' : s.name + ' [' + code + '] ⚠️未关联', s.execRate, s.target, c.timeProg, r ? (s.target === 0 ? '不考核' : '预计年底 ' + fmtPct(r.rate)) : (s.target === 0 ? '不考核' : null), r && s.target !== 0 ? r.rate : null);
   });
   $('#execRates').innerHTML = ex +
-    '<div class="exec-legend"><span class="lg"><i style="background:var(--green)"></i>目标 ' + fmtPct(m.execRateTarget) + '</span>' +
+    '<div class="exec-legend"><span class="lg"><i style="background:var(--green)"></i>目标线（各来源自己的目标）</span>' +
     '<span class="lg"><i style="border-left:2px dashed var(--amber);width:0;background:none"></i>时间进度</span>' +
     '<span class="lg"><i style="background:var(--blue)"></i>实际</span></div>';
   drawChart(c);
   $('#chartHint').innerHTML = (c.snap && c.snaps.length < 2)
     ? 'ℹ️ OD 月度柱需要<b>至少两次导入</b>才有（相邻执行表快照的差值）；当前仅 1 次导入，OD 月均按「累计执行 ÷ 已过月数」估算（' + fmtCny(c.odAvg) + '/月），下次导入后自动校准。'
-    : ''; 
+    : '';
 
   let gHtml = '';
   if (!c.snap) gHtml = '<div class="empty">尚未导入执行表。</div>';
@@ -1587,6 +1909,7 @@ function renderNow() {
       '<tr><td>授予进度</td><td><b>' + fmtPct(c.grantProg) + '</b> vs 时间 ' + fmtPct(c.timeProg) + '</td></tr>' +
       '</table>' +
       (ok ? '<div class="cons-diff ok">✓ 授予进度正常</div>' : '<div class="cons-diff warn">⚠️ 授予进度落后时间进度——这是催 BA 的量化依据</div>') +
+      ((d && d.baList.length) ? '<div style="margin-top:6px">' + d.baList.map(b => '<div class="adv-item"><span class="adv-label">' + esc(b.name) + '</span><div>缺口 ' + fmtCny(b.gap) + '，去掉可支配和预计返还后还缺 <b>' + fmtCny(b.short) + '</b>（' + b.kind + '）' + (b.latest ? '，只靠 PO 消化最晚 ' + b.latest + ' 月到账' : '') + '</div></div>').join('') + '</div>' : '') +
       (c.grantWarn.filter(w => w.msg).length ? '<div style="margin-top:6px">' + c.grantWarn.filter(w => w.msg).map(w => '<div class="adv-item"><span class="adv-label">' + esc(w.name) + '</span><div>' + esc(w.msg) + '</div></div>').join('') + '</div>' : '');
   }
   $('#grantPanel').innerHTML = gHtml;
@@ -1603,7 +1926,31 @@ function renderNow() {
     if (c.grantChecks.length) cons += '<div class="cons-diff info">ℹ️ 授予流水与执行表「本年度授予」不符：' + c.grantChecks.map(k => esc(k.name) + '（流水 ' + fmtCny(k.logSum) + ' vs 表 ' + fmtCny(k.granted) + '）').join('、') + '</div>';
   }
   $('#consistency').innerHTML = cons;
+
+  /* ---- ⑤ 回测：上次导入时的建议/估计 vs 这次导入看到的实际 ---- */
+  $('#backtestBox').innerHTML = backtestHtml(c);
 }
+// 回测面板：每次导入记一份快照，下次导入用实际数回测（当月将执行/多下、下月 PO 建议金额）
+function backtestHtml(c) {
+  const logs = (state.importLogs || []).filter(L => L.year === c.Y).slice(-6).reverse();
+  if (!logs.length) return '<div class="empty">还没有导入记录——每次导入自动记一份建议，下次导入后在这里对比"建议 vs 实际"。</div>';
+  const dev = (a, b) => (b > 0 ? ((a - b) / b) : 0);
+  return '<table class="tbl"><thead><tr><th>导入日</th><th>项目</th><th class="num">当时的估计</th><th class="num">实际</th><th class="num">偏差</th></tr></thead><tbody>' +
+    logs.map(L => {
+      const est = L.estimates || {}, act = L.actual || {};
+      const rows = [
+        ['当月将执行', est.curExec, act.exec],
+        ['当月多下', est.curOver, act.over],
+        [L.month + ' 月后的 PO 建议', L.advice && L.advice.poNeed, act.issuedNext]
+      ];
+      return rows.map(([nm, e, a], i) => {
+        const pending = a == null;
+        return '<tr' + (i > 0 ? ' style="opacity:.85"' : '') + '><td>' + (i === 0 ? esc(L.date) : '') + '</td><td>' + nm + '</td><td class="num">' + fmtCny(e) + '</td>' +
+          '<td class="num">' + (pending ? '<span class="muted">待下次导入</span>' : fmtCny(a)) + '</td><td class="num">' + (pending || !e ? '<span class="muted">—</span>' : '<span style="color:' + (Math.abs(dev(a, e)) > 0.1 ? 'var(--red)' : 'var(--green)') + '">' + (dev(a, e) * 100).toFixed(1) + '%</span>') + '</td></tr>';
+      }).join('');
+    }).join('') + '</tbody></table><div class="muted" style="margin-top:6px">当月多下 = 那个月 PO 的总额 − 实际执行（含已验收返还的）。连续偏大说明习惯性多下，校准系数会自动收紧建议金额。</div>';
+}
+function shortName(s) { const t = String(s || ''); return t.length > 14 ? t.slice(0, 13) + '…' : t; }
 
 function drawChart(c) {
   const canvas = $('#monthlyChart');
@@ -1647,10 +1994,12 @@ function renderBudget() {
   if (!c.snap && !c.plansY.length) { wrap.innerHTML = '<div class="empty">先录入规划、导入执行表。</div>'; return; }
   const rows = [];
   const seen = new Set();
+  const rmap = {};
+  if (c.poDecision) c.poDecision.rows.forEach(r => { if (r.code) rmap[r.code] = r; });
   if (c.snap) c.codes.forEach(code => {
     const s = c.per[code];
     seen.add(code);
-    const tgtTxt = s.target === 0 ? '<span class="muted">不考核</span>' : (s.targetInherit ? '<span title="继承年度默认">' + fmtPct(s.target) + '<span class="muted">·默认</span></span>' : '<b>' + fmtPct(s.target) + '</b>');
+    const tgtTxt = !s.plan ? '<span class="muted">未关联</span>' : s.target === 0 ? '<span class="muted">不考核</span>' : (s.targetInherit ? '<span title="继承年度默认">' + fmtPct(s.target) + '<span class="muted">·默认</span></span>' : '<b>' + fmtPct(s.target) + '</b>');
     rows.push('<tr>' +
       '<td><b>' + esc(s.name) + '</b> <span class="muted">[' + esc(code) + ']</span></td>' +
       '<td>' + (s.plan ? esc(s.plan.name) + (s.plan.planProject ? ' <span class="muted">[' + esc(s.plan.planProject) + ']</span>' : '') : '<span class="btn-row"><button class="btn small" data-action="link:manage">🔗 关联规划</button> <button class="btn small danger" data-action="excl:add" data-id="' + esc(code) + '" title="不在本年规划/挂靠项：剔除后其执行与 PO 均不参与计算">🚫 剔除</button></span>') + '</td>' +
@@ -1660,78 +2009,147 @@ function renderBudget() {
       '<td class="num">' + fmtCny(s.itwExec) + '</td>' +
       '<td class="num">' + fmtCny(s.odExec) + '</td>' +
       '<td class="num">' + fmtCny(s.remain) + '</td>' +
+      '<td>' + Object.keys(s.byProj).map(pk => '<div class="wl-line">' + (c.hasProj ? '<b>' + esc(pk) + '</b>：' : '') + 'IT外包 ' + fmtCny(s.byProj[pk].itwRemain) + (s.byProj[pk].odRemain ? ' · OD ' + fmtCny(s.byProj[pk].odRemain) : '') + '</div>').join('') + '</td>' +
       '<td class="num">' + tgtTxt + '</td>' +
-      '<td><div style="display:flex;align-items:center;gap:8px"><div class="pbar" style="flex:1">' + (s.target === 0 ? '' : '<div class="mark" style="left:' + Math.min(s.target * 100, 100) + '%"></div>') + '<div class="pbar-fill ' + rateColor(s.execRate, c.timeProg, s.target) + '" style="width:' + (s.execRate == null ? 0 : Math.min(s.execRate * 100, 100)).toFixed(1) + '%"></div><div class="mark mark-time" style="left:' + (c.timeProg * 100).toFixed(1) + '%"></div></div><span class="muted">' + fmtPct(s.execRate) + '</span></div></td></tr>');
+      '<td><div style="display:flex;align-items:center;gap:8px"><div class="pbar" style="flex:1">' + (s.target === 0 ? '' : '<div class="mark" style="left:' + Math.min(s.target * 100, 100) + '%"></div>') + '<div class="pbar-fill ' + rateColor(s.execRate, c.timeProg, s.target, rmap[code] && rmap[code].assessed ? rmap[code].rate : null) + '" style="width:' + (s.execRate == null ? 0 : Math.min(s.execRate * 100, 100)).toFixed(1) + '%"></div><div class="mark mark-time" style="left:' + (c.timeProg * 100).toFixed(1) + '%"></div></div><span class="muted">' + fmtPct(s.execRate) + (rmap[code] && rmap[code].assessed ? ' → 年底 ' + fmtPct(rmap[code].rate) : '') + '</span></div></td></tr>');
   });
   c.plansY.forEach(p => {
     if (p.code && seen.has(p.code)) return;
     rows.push('<tr style="opacity:.75"><td><span class="muted">平台未出现</span></td>' +
       '<td><b>' + esc(p.name) + '</b>' + (p.code ? ' <span class="muted">[' + esc(p.code) + ']</span>' : ' <span class="st st-open">待授予</span>') + '</td>' +
       '<td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * c.fx) + '</td>' +
-      '<td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>' +
+      '<td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="muted">未到账</td>' +
       '<td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td>—</td></tr>');
   });
   const exclHint = c.excluded && c.excluded.length
     ? '<div class="cons-diff info" style="margin-top:8px">🚫 已剔除 ' + c.excluded.length + ' 项（其执行与 PO 均不参与计算）：' + c.excluded.map(x => esc(x) + (c.snap && c.snap.rows[x] ? ' ' + esc(c.snap.rows[x].name) : '')).join('、') + '　<button class="btn small" data-action="excl:manage">恢复</button></div>'
     : '';
   wrap.innerHTML = '<table class="tbl"><thead><tr>' +
-    '<th>平台名称</th><th>规划名称</th><th class="num">规划(WUSD)</th><th class="num">规划¥</th><th class="num">可用</th><th class="num">IT外包执行</th><th class="num">OD执行</th><th class="num">剩余</th><th class="num">目标</th><th style="min-width:170px">执行率</th>' +
+    '<th>平台名称</th><th>规划名称</th><th class="num">规划(WUSD)</th><th class="num">规划¥</th><th class="num">可用</th><th class="num">IT外包执行</th><th class="num">OD执行</th><th class="num">剩余</th><th>各花钱项目的剩余（钱包）</th><th class="num">目标</th><th style="min-width:170px">执行率</th>' +
     '</tr></thead><tbody>' + rows.join('') + '</tbody>' +
-    '<tfoot><tr><td>合计</td><td></td><td class="num">' + fmtWusd(sum(c.plansY, wusdOf)) + '</td><td class="num">' + fmtCny(c.planCnyTotal) + '</td><td class="num">' + fmtCny(c.availTotal) + '</td><td class="num">' + fmtCny(c.itwExec) + '</td><td class="num">' + fmtCny(c.odExec) + '</td><td class="num">' + fmtCny(c.remainTotal) + '</td><td class="num">' + fmtPct(yearParams(curYear()).execRateTarget) + '</td><td>' + fmtPct(c.execRate) + '</td></tr></tfoot></table>' + exclHint;
+    '<tfoot><tr><td>合计</td><td></td><td class="num">' + fmtWusd(sum(c.plansY, wusdOf)) + '</td><td class="num">' + fmtCny(c.planCnyTotal) + '</td><td class="num">' + fmtCny(c.availTotal) + '</td><td class="num">' + fmtCny(c.itwExec) + '</td><td class="num">' + fmtCny(c.odExec) + '</td><td class="num">' + fmtCny(c.remainTotal) + '</td><td></td><td class="num" title="各来源目标按规划金额加权">加权 ' + fmtPct(c.weightedTarget) + '</td><td>' + fmtPct(c.execRate) + '</td></tr></tfoot></table>' + exclHint;
 }
 
 /* ================= 渲染：PO ================= */
 function renderPO() {
   const c = calc();
-  const exclCnt = c.po ? c.po.rows.length - c.poList.length - c.poExcludedRows.length : 0;
-  const closedCnt = c.poList.filter(r => r.status === 'CLOSED').length;
-  $('#poSub').textContent = c.po ? ('快照 ' + c.po.updatedAt + ' · 只看未关闭 ' + (c.poList.length - closedCnt) + ' 个（已关闭 ' + closedCnt + ' 个不显示）' + (exclCnt ? ' · 已剔除 ' + exclCnt + ' 行' : '') + (c.poExcludedRows.length ? ' · 挂靠剔除 ' + c.poExcludedRows.length + ' 行' : '')) : '';
-  const wrap = $('#poTableWrap');
-  if (!c.po) { wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; $('#poFrozenWrap').innerHTML = ''; $('#poAdviceWrap').innerHTML = ''; $('#poAdviceSub').textContent = ''; return; }
-  const rows = c.poList.filter(r => r.status !== 'CLOSED').sort((a, b) => (a.startDate || '') < (b.startDate || '') ? -1 : 1).map(r => {
-    const act = sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
-    const fc = sum(Object.entries(r.months), ([mm, v]) => +mm >= c.po.asOf ? v : 0);
-    const startM = r.startDate ? +String(r.startDate).slice(5, 7) : 0;
-    const refund = sum(Object.entries(r.months), ([mm, v]) => (+mm >= c.po.asOf && +mm > startM) ? v : 0);
-    return '<tr><td><b>' + esc(r.poNo) + '</b>' + (r.resName ? '<div class="muted">' + esc(r.resName) + '</div>' : '') + '</td>' +
-      '<td>' + esc(r.itProject || '—') + '</td>' +
-      '<td>' + esc(r.budgetCode || '—') + (c.per[r.budgetCode] && c.per[r.budgetCode].name ? ' <span class="muted">' + esc(c.per[r.budgetCode].name) + '</span>' : '') + '</td>' +
-      '<td>' + esc(r.startDate || '—') + '</td>' +
-      '<td class="num">' + fmtCny(r.amount) + '</td>' +
-      '<td class="num">' + fmtCny(act) + (fc ? ' <span class="muted">+' + fmtCny(fc) + '预测</span>' : '') + '</td>' +
-      '<td><span class="st st-' + (r.status === 'CLOSED' ? 'accepted' : 'open') + '">' + r.status + '</span></td>' +
-      '<td class="num">' + (r.status === 'OPEN' ? fmtCny(Math.max(r.amount - act, 0)) : '—') + '</td>' +
-      '<td class="num">' + (r.status === 'OPEN' && refund ? fmtCny(refund) : '—') + '</td>' +
-      '<td><button class="btn small" data-action="po:exclAdd" data-key="' + esc(r.poNo + '|' + (r.itProject || '')) + '" title="挂靠/非我下的PO：从我的PO管理剔除（已执行额仍计入执行率）">挂靠剔除</button></td></tr>';
-  }).join('');
-  // 挂靠剔除区（PO 级：不参与我的 PO 管理，执行率仍按平台口径）
+  const wrap = $('#poTableWrap'), frozenWrap = $('#poFrozenWrap'), advWrap = $('#poAdviceWrap');
+  if (!c.po) {
+    $('#poSub').textContent = ''; $('#poAdviceSub').textContent = '';
+    wrap.innerHTML = '<div class="empty">尚未导入 PO 明细。</div>'; frozenWrap.innerHTML = ''; advWrap.innerHTML = '';
+    return;
+  }
+  const d = c.poDecision;
+  const wl = x => (x.proj && c.hasProj ? '<b>' + esc(x.proj) + '</b> / ' : (c.hasProj ? '<span class="muted">未区分项目</span> / ' : '')) + esc(x.name || x.code || '—');
+  const startM = g => g.startDate ? +g.startDate.slice(5, 7) : 0;
+  const byStart = (a, b) => (b.startDate || '').localeCompare(a.startDate || '');
+  const all = Object.values(c.byPo);
+  const openPos = all.filter(g => g.status === 'OPEN').sort(byStart);
+  const closedPos = all.filter(g => g.status !== 'OPEN').sort(byStart);
+  $('#poSub').textContent = '快照 ' + c.po.updatedAt + ' · 未关闭 ' + openPos.length + ' 张（已关闭 ' + closedPos.length + ' 张折叠在下方）' + (c.poExcludedRows.length ? ' · 挂靠剔除 ' + new Set(c.poExcludedRows.map(r => r.poNo)).size + ' 张' : '') + '　｜　PO 金额按 PO 只算一次，月度执行/预测按行相加';
+
+  /* ---- PO 台账：一张 PO 一行（可跨多个花钱项目/预算来源），下面列出它涉及的每个钱包 ---- */
+  const posHtml = g =>
+    '<tr><td><b>' + esc(g.poNo) + '</b>' + (g.resName ? '<div class="muted">' + esc(g.resName) + '</div>' : '') + '</td>' +
+    '<td>' + (g.startDate ? esc(g.startDate) : '<span class="muted" title="费用起始时间缺失，按当月处理">未识别</span>') + '<div class="muted">' + (startM(g) < c.po.asOf ? '往月未关闭 · 已执行额可调账' : startM(g) === c.po.asOf ? '当月在执行' : '已提前下') + '</div></td>' +
+    '<td class="num">' + (g.amount > 0 ? fmtCny(g.amount) : '<span class="muted">—</span>') + '</td>' +
+    '<td class="num">' + fmtCny(g.E) + '</td>' +
+    '<td class="num"><b>' + fmtCny(g.frozen) + '</b></td>' +
+    '<td class="num">' + fmtCny(g.willExec) + '</td>' +
+    '<td class="num" style="color:' + (g.refund > 0 ? 'var(--amber)' : 'inherit') + '"><b>' + fmtCny(g.refund) + '</b></td>' +
+    '<td>' + g.detail.map(x => '<div class="wl-line">' + wl(x) + '：冻结 ' + fmtCny(x.frozen) + (x.refund > 0 ? ' → 验收后返还 <b>' + fmtCny(x.refund) + '</b>' : (x.frozen > 0 ? '（会执行掉）' : '')) + '</div>').join('') + '</td>' +
+    '<td><button class="btn small" data-action="po:exclAdd" data-key="' + esc(g.poNo) + '" title="挂靠/非我下的 PO：整张剔除（已执行额仍计入执行率）">挂靠剔除</button></td></tr>';
+  wrap.innerHTML =
+    '<table class="tbl"><thead><tr><th>PO</th><th>费用起始</th><th class="num">PO 总额</th><th class="num">已执行</th><th class="num">在途冻结</th><th class="num">其中将执行</th><th class="num">验收后返还</th><th>涉及的钱包（冻结 → 返还到哪）</th><th>操作</th></tr></thead><tbody>' +
+    (openPos.length ? openPos.map(posHtml).join('') : '<tr><td colspan="9" class="empty">没有未关闭的 PO，没有在途冻结 ✓</td></tr>') + '</tbody></table>' +
+    (closedPos.length ? '<details class="fold"><summary>已关闭的 PO（' + closedPos.length + ' 张，不占资金）</summary><table class="tbl"><thead><tr><th>PO</th><th>费用起始</th><th class="num">PO 总额</th><th class="num">已执行</th><th>涉及的钱包（已执行）</th></tr></thead><tbody>' +
+      closedPos.map(g => '<tr style="opacity:.75"><td><b>' + esc(g.poNo) + '</b><div class="muted">' + esc(g.resName || '') + '</div></td><td>' + esc(g.startDate || '—') + '</td><td class="num">' + fmtCny(g.amount) + '</td><td class="num">' + fmtCny(g.E) + '</td><td>' + g.detail.map(x => '<div class="wl-line">' + wl(x) + '：' + fmtCny(x.E) + '</div>').join('') + '</td></tr>').join('') + '</tbody></table></details>' : '');
+
+  // 挂靠剔除区（PO 级：按 PO 编号整张剔除，执行率仍按平台口径）
   let exclHtml = '';
   if (c.poExcludedRows.length) {
     const exAgg = {};
     c.poExcludedRows.forEach(r => {
-      const k = r.poNo + '|' + (r.itProject || '');
-      const g = exAgg[k] = exAgg[k] || { poNo: r.poNo, resName: r.resName, itProject: r.itProject, amount: 0, act: 0 };
+      const g = exAgg[r.poNo] = exAgg[r.poNo] || { poNo: r.poNo, resName: r.resName, amount: 0, act: 0, srcs: {} };
       g.amount = Math.max(g.amount, r.amount || 0);
       g.act += sum(Object.entries(r.months), ([mm, v]) => +mm < c.po.asOf ? v : 0);
+      g.srcs[r.budgetCode] = 1;
     });
-    exclHtml = '<div class="cons-diff info" style="margin-top:10px">🚫 挂靠剔除 PO ' + Object.keys(exAgg).length + ' 个（累计已执行 ' + fmtCny(c.poExclAct) + ' <b>仍计入执行率</b>；已从台账/冻结/返还/月度图/PO建议中剔除）</div>' +
-      '<table class="tbl"><thead><tr><th>PO</th><th>内容</th><th>花钱项目</th><th class="num">金额</th><th class="num">已执行</th><th>操作</th></tr></thead><tbody>' +
-      Object.values(exAgg).map(g => '<tr><td><b>' + esc(g.poNo) + '</b></td><td>' + esc(g.resName || '') + '</td><td>' + esc(g.itProject || '—') + '</td><td class="num">' + fmtCny(g.amount) + '</td><td class="num">' + fmtCny(g.act) + '</td><td><button class="btn small" data-action="po:exclDel" data-key="' + esc(g.poNo + '|' + (g.itProject || '')) + '">恢复</button></td></tr>').join('') + '</tbody></table>';
+    exclHtml = '<div class="cons-diff info" style="margin-top:10px">🚫 挂靠剔除 PO ' + Object.keys(exAgg).length + ' 张（累计已执行 ' + fmtCny(c.poExclAct) + ' <b>仍计入执行率</b>；已从台账/在途冻结/预计返还/月度图/PO 建议中整张剔除）</div>' +
+      '<table class="tbl"><thead><tr><th>PO</th><th>内容</th><th>预算来源</th><th class="num">PO 总额</th><th class="num">已执行</th><th>操作</th></tr></thead><tbody>' +
+      Object.values(exAgg).map(g => '<tr><td><b>' + esc(g.poNo) + '</b></td><td>' + esc(g.resName || '') + '</td><td class="muted">' + Object.keys(g.srcs).map(esc).join('、') + '</td><td class="num">' + fmtCny(g.amount) + '</td><td class="num">' + fmtCny(g.act) + '</td><td><button class="btn small" data-action="po:exclDel" data-key="' + esc(g.poNo) + '">恢复</button></td></tr>').join('') + '</tbody></table>';
   }
-  wrap.innerHTML = '<table class="tbl"><thead><tr><th>PO</th><th>花钱项目</th><th>预算来源</th><th>费用起始</th><th class="num">PO金额</th><th class="num">已执行/预测</th><th>状态</th><th class="num">在途冻结</th><th class="num">预计返还</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>' + exclHtml;
-  $('#poFrozenWrap').innerHTML =
-    '<table class="cons-table">' +
-    '<tr><td>OPEN PO 数</td><td>' + c.openCnt + '</td></tr>' +
-    '<tr><td>在途冻结（PO金额 − 已执行）</td><td>' + fmtCny(c.poFrozen) + '</td></tr>' +
-    '<tr><td>预计返还（OPEN PO 超出所属月的预测）</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
-    '</table><div class="muted" style="margin-top:6px">PO 按自然月下达：<b>所属月内的预测</b>=即将执行不算返还；<b>超出所属月</b>的预测=没花掉，验收后返还。挂靠 PO 不计入以上口径。</div>';
+  wrap.insertAdjacentHTML('beforeend', exclHtml);
 
-  $('#poAdviceSub').textContent = '';
-  $('#poAdviceWrap').innerHTML = c.poDecision
-    ? '<div class="cons-diff info" style="margin:0">💡 完整决策（三档金额+分配方案）在首页「Ⓣ 下 PO 决策」卡。建议 <b>' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(c.poDecision.base) + '~' + fmtCny(c.poDecision.ceiling) + '）。</div>'
+  /* ---- 在途与返还：按钱包看（验收后多少钱回到哪个钱包）+ 多下率 ---- */
+  const ws = Object.values(c.wallets).filter(w => w.frozen > 0.5).sort((a, b) => b.frozen - a.frozen);
+  const willExecTotal = sum(openPos, g => g.willExec);
+  const pastRefund = sum(openPos.filter(g => startM(g) < c.po.asOf), g => g.refund);
+  const curOver = sum(openPos.filter(g => startM(g) >= c.po.asOf), g => g.refund);
+  // 多下率：往月「下了多少（PO 总额）vs 实际执行」，用来看习惯性多下
+  const issuedM = {};
+  all.forEach(g => { const mo = startM(g); if (mo && g.amount > 0) issuedM[mo] = (issuedM[mo] || 0) + g.amount; });
+  const mos = Object.keys(issuedM).map(Number).filter(mo => mo < c.po.asOf).sort((a, b) => b - a).slice(0, 6);
+  const overRows = mos.map(mo => { const iss = issuedM[mo], ex = c.poMonthlyAct[mo] || 0; return { mo, iss, ex, over: iss - ex, rate: iss > 0 ? (iss - ex) / iss : 0 }; });
+  if (d && d.inflight.fc > 0) overRows.unshift({ mo: c.po.asOf, iss: d.inflight.fc, ex: d.inflight.willExec, over: d.inflight.over, rate: d.inflight.over / d.inflight.fc, cur: true });
+  frozenWrap.innerHTML =
+    '<table class="cons-table">' +
+    '<tr><td>未关闭 PO</td><td>' + c.openCnt + ' 张</td></tr>' +
+    '<tr><td>在途冻结（PO 总额 − 已执行）</td><td><b>' + fmtCny(c.poFrozen) + '</b></td></tr>' +
+    '<tr><td>其中会执行掉</td><td>' + fmtCny(willExecTotal) + '</td></tr>' +
+    '<tr><td>验收后返还</td><td><b style="color:var(--amber)">' + fmtCny(c.poReturn) + '</b></td></tr>' +
+    '</table>' +
+    '<div class="muted" style="margin:6px 0">往月 PO 剩余的钱验收后全部返还（' + fmtCny(pastRefund) + '）；当月在执行的按团队当月需求估，多下约 ' + fmtCny(curOver) + ' 会返还。执行表的「剩余」已扣掉全部在途预测，所以这笔钱现在不能用。</div>' +
+    (ws.length
+      ? '<table class="tbl"><thead><tr><th>钱包（钱回到这里）</th><th class="num">冻结</th><th class="num">将执行</th><th class="num">验收后返还</th><th>PO</th></tr></thead><tbody>' +
+        ws.map(w => '<tr><td>' + wl(w) + '</td><td class="num"><b>' + fmtCny(w.frozen) + '</b></td><td class="num">' + fmtCny(w.willExec) + '</td><td class="num" style="color:var(--amber)"><b>' + fmtCny(w.refund) + '</b></td><td class="muted">' + Array.from(new Set(w.pos)).map(esc).join('、') + '</td></tr>').join('') +
+        '</tbody><tfoot><tr><td>合计</td><td class="num">' + fmtCny(sum(ws, w => w.frozen)) + '</td><td class="num">' + fmtCny(sum(ws, w => w.willExec)) + '</td><td class="num">' + fmtCny(sum(ws, w => w.refund)) + '</td><td></td></tr></tfoot></table>'
+      : '<div class="empty">没有在途冻结 ✓</div>') +
+    (overRows.length
+      ? '<div style="margin-top:12px"><b style="font-size:13px">多下率</b> <span class="muted">下了多少 vs 实际执行，连续偏大说明习惯性多下</span></div>' +
+        '<table class="tbl"><thead><tr><th>月</th><th class="num">PO 总额</th><th class="num">实际执行</th><th class="num">多下</th><th class="num">多下率</th></tr></thead><tbody>' +
+        overRows.map(x => '<tr' + (x.cur ? ' style="background:var(--blue-bg)"' : '') + '><td>' + x.mo + ' 月' + (x.cur ? ' <span class="muted">（预估）</span>' : '') + '</td><td class="num">' + fmtCny(x.iss) + '</td><td class="num">' + fmtCny(x.ex) + '</td><td class="num">' + fmtCny(x.over) + '</td><td class="num" style="color:' + (x.rate > 0.05 ? 'var(--red)' : x.rate > 0.02 ? 'var(--amber)' : 'var(--green)') + '">' + fmtPct(x.rate) + '</td></tr>').join('') + '</tbody></table>'
+      : '');
+
+  /* ---- 下月 PO 与 OD 建议（首页决策卡的摘要） ---- */
+  $('#poAdviceSub').textContent = d ? (d.isDec ? '12 月下旬下 1 月 PO' : '为 ' + d.po.nextM + ' 月 PO') : '';
+  advWrap.innerHTML = d
+    ? '<table class="cons-table">' +
+      '<tr><td>' + (d.isDec ? '下旬下 1 月 PO' : '20 号前下 ' + d.po.nextM + ' 月 PO') + '</td><td><b>' + fmtCny(d.isDec ? d.jan.toIssue : d.po.toIssue) + '</b></td></tr>' +
+      (d.isDec ? '' : '<tr><td>团队需求（理论 × 校准）</td><td>' + fmtCny(d.po.need) + (d.po.issued > 0 ? '，已下 ' + fmtCny(d.po.issued) : '') + '</td></tr>') +
+      '<tr><td>OD 调拨</td><td><b>' + fmtCny(d.od.transfer) + '</b>' + (d.od.transfer > 0 && c.hasProj ? ' <span class="muted">（' + esc(d.od.proj) + ' 内）</span>' : '') + '</td></tr>' +
+      (d.yearEnd ? '<tr><td>1 月 PO 可留 / 需求</td><td>' + fmtCny(d.jan.reserve) + ' / ' + fmtCny(d.jan.need) + (d.jan.short > 0 ? ' <b style="color:var(--red)">缺 ' + fmtCny(d.jan.short) + '</b>' : '') + '</td></tr>' : '') +
+      '<tr><td>验收后返还' + (d.yearEnd ? '（12 月 15 日前完成）' : '') + '</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
+      '</table><div class="cons-diff info">完整的操作指令（从哪些钱包出、催谁）在首页「Ⓣ 本周期操作与决策」。</div>'
     : '<div class="empty">—</div>';
 }
 
+// 每次导入记一份决策快照；并用这次导入看到的实际数回测之前的记录
+function recordImportLog(c) {
+  const logs = state.importLogs = state.importLogs || [];
+  if (c.po) logs.forEach(L => {
+    if (L.checked || L.year !== c.Y) return;
+    if (c.po.asOf > L.month) {   // 记录的那个月已经变成执行列，可以回测
+      let over = 0, issuedNext = 0;
+      Object.values(c.byPo).forEach(g => {
+        const mo = g.startDate ? +g.startDate.slice(5, 7) : 0;
+        if (mo === L.month && g.amount > 0) over += Math.max(0, g.amount - g.E);
+        if (mo === L.month + 1) issuedNext += g.amount;
+      });
+      L.actual = { exec: c.poMonthlyAct[L.month] || 0, over, issuedNext };
+      L.checked = c.snap ? c.snap.date : todayStr();
+    }
+  });
+  const d = c.poDecision;
+  if (!d) return;
+  logs.push({
+    date: c.snap ? c.snap.date : todayStr(), year: c.Y, month: c.curM,
+    advice: { poNeed: d.isDec ? d.jan.toIssue : (d.po ? d.po.toIssue : 0) },
+    estimates: { curExec: d.inflight.willExec, curOver: d.inflight.over },
+    rollup: { hit: d.hit, assessed: d.assessed, forecastRate: c.forecastRate, weightedTarget: c.weightedTarget }
+  });
+  if (logs.length > 80) logs.splice(0, logs.length - 80);
+}
 
 /* ================= 渲染：数据管理 ================= */
 function renderData() {
@@ -1748,7 +2166,7 @@ function renderData() {
 
   $('#dataMgmt').innerHTML =
     '<div class="btn-row">' +
-    '<button class="btn primary" data-action="import:open">📥 导入平台数据（4文件）</button>' +
+    '<button class="btn primary" data-action="import:open">📥 导入平台数据</button>' +
     '<button class="btn primary" data-action="data:saveFile">💾 保存到数据文件</button>' +
     '<button class="btn" data-action="data:openFile">📂 打开/恢复数据文件</button>' +
     '<button class="btn" data-action="dataset:scan">📁 扫描数据集</button>' +
@@ -1758,7 +2176,8 @@ function renderData() {
     '<input type="file" id="importFile" accept=".json,application/json" style="display:none">' +
     '<button class="btn" data-action="data:demo">示例数据</button>' +
     '<button class="btn danger" data-action="data:clear">清空</button></div>' +
-    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，平台导出文件（PO明细/执行表）和<b>团队 Excel</b> 都丢进该文件夹，打开看板<b>自动扫描导入</b>——团队 Excel 改完存盘，下次打开自动生效，无需任何操作（快照日期=文件导出时间，重复文件自动跳过）。</div>' +
+    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，<b>每个花钱项目建一个子文件夹</b>（名字自己起，定后不改），该项目的「项目总览」和「PO 明细」都丢进去；<b>团队 Excel</b> 放根目录。打开看板<b>自动扫描导入</b>，不用任何操作（快照日期 = 文件导出时间，重复文件自动跳过）。执行表没有项目列，所以必须放进项目子文件夹，否则不导入。' +
+    (c.projects.length ? '　当前项目：' + c.projects.map(esc).join('、') + '。' : (c.hasProj ? '' : '　<span style="color:var(--amber)">本年的执行表还是合并存放的（旧版），把文件放进项目子文件夹重新导入后，决策建议就能区分花钱项目。</span>')) + '</div>' +
     '<div class="muted" style="margin-top:10px"><b>持久化架构</b>：budget.json = 唯一真源（<b>选一次文件后每次变更自动写入</b>，随 git 同步，清浏览器不丢）；浏览器 localStorage 只是缓存（断网/断连时兜底，重连自动同步）。分层备份用于手动归档/迁移。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。' + (fileHandle ? (fileConnected ? ' ✅ 数据文件已连接' : ' ⚠️ 数据文件未连接（点顶部📂重连）') : ' ⏸ 尚未设置数据文件（点上方💾选择 data/budget.json）') + '</div>' +
     '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
 
@@ -1968,10 +2387,10 @@ function buildSharePkg(includePo, includeTeam) {
     budgetDashShare: 1,
     exportedAt: todayStr() + ' ' + new Date().toTimeString().slice(0, 5),
     state: {
-      schemaVersion: 3,
+      schemaVersion: 4,
       meta: state.meta, years: state.years, plans: state.plans,
       team: includeTeam ? state.team : [],
-      grantLogs: state.grantLogs, execSnaps: state.execSnaps,
+      grantLogs: state.grantLogs, execSnaps: state.execSnaps, projAlias: state.projAlias,
       poDataByYear: includePo ? state.poDataByYear : {},
       updatedAt: state.updatedAt
     }
@@ -2028,8 +2447,8 @@ function exportModal() {
 }
 function doExport(kind) {
   let obj, name;
-  if (kind === 'config') { obj = { type: 'budget-dash-config', schemaVersion: 3, meta: state.meta, years: state.years, plans: state.plans, team: state.team }; name = '预算看板-配置'; }
-  else if (kind === 'data') { obj = { type: 'budget-dash-data', schemaVersion: 3, execSnaps: state.execSnaps, poDataByYear: state.poDataByYear, grantLogs: state.grantLogs }; name = '预算看板-数据'; }
+  if (kind === 'config') { obj = { type: 'budget-dash-config', schemaVersion: 4, meta: state.meta, years: state.years, plans: state.plans, team: state.team, projAlias: state.projAlias }; name = '预算看板-配置'; }
+  else if (kind === 'data') { obj = { type: 'budget-dash-data', schemaVersion: 4, execSnaps: state.execSnaps, poDataByYear: state.poDataByYear, grantLogs: state.grantLogs, importLogs: state.importLogs, projPrints: state.projPrints, projAlias: state.projAlias }; name = '预算看板-数据'; }
   else { obj = { type: 'budget-dash-full', ...state }; name = '预算看板-全量'; }
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -2068,60 +2487,79 @@ function linkModal() {
 /* ================= 示例数据 ================= */
 function demoState() {
   const y = new Date().getFullYear(), t = todayStr();
+  const PA = 'IT项目A', PB = 'IT项目B';   // 花钱项目标识 = 数据集子文件夹名
   const S = (itw, od) => ({ itw: { prior: itw[0], granted: itw[1], avail: itw[2], exec: itw[3], fc: itw[4], remain: itw[5] }, od: { prior: od[0], granted: od[1], avail: od[2], exec: od[3], fc: od[4], remain: od[5] } });
-  const snap2 = {   // 最新（11-18 导入）
-    date: y + '-11-18',
-    rows: {
-      '111': { name: '智能平台预算A', ...S([20000, 250000, 270000, 150000, 60000, 60000], [0, 0, 12000, 10000, 0, 2000]) },
-      '222': { name: '智能运维预算B', ...S([0, 200000, 200000, 100000, 70000, 30000], [0, 0, 8000, 6000, 0, 2000]) },
-      '333': { name: '新出现预算C', ...S([0, 80000, 80000, 20000, 30000, 30000], [0, 0, 0, 0, 0, 0]) },
-      '444': { name: '安全合规预算D', ...S([10000, 80000, 90000, 55000, 30000, 5000], [0, 0, 0, 0, 0, 0]) }
-    }
+  const Z = [0, 0, 0, 0, 0, 0];
+  // 执行表按花钱项目分开存（byProject），合并视图 = 各项目相加。111/555 只在 A；222/333 只在 B；444 两个项目下都有钱
+  const mk = (date, A, B) => {
+    const rows = {};
+    [A, B].forEach(o => Object.entries(o).forEach(([c, r]) => {
+      const x = rows[c] = rows[c] || { name: r.name, itw: {}, od: {} };
+      ['itw', 'od'].forEach(cat => Object.keys(r[cat]).forEach(k => { x[cat][k] = (x[cat][k] || 0) + r[cat][k]; }));
+    }));
+    return { date, byProject: { [PA]: A, [PB]: B }, rows };
   };
-  const snap1 = {   // 上月（10-31 导入，OD 供差值）
-    date: y + '-10-31',
-    rows: {
-      '111': { name: '智能平台预算A', ...S([20000, 250000, 270000, 150000, 60000, 60000], [0, 0, 12000, 6000, 0, 6000]) },
-      '222': { name: '智能运维预算B', ...S([0, 200000, 200000, 100000, 70000, 30000], [0, 0, 8000, 0, 0, 8000]) },
-      '333': { name: '新出现预算C', ...S([0, 80000, 80000, 20000, 30000, 30000], [0, 0, 0, 0, 0, 0]) },
-      '444': { name: '安全合规预算D', ...S([10000, 80000, 90000, 55000, 30000, 5000], [0, 0, 0, 0, 0, 0]) }
-    }
+  const snap2 = mk(y + '-11-18',   // 最新（11-18 导入，执行到 10 月）
+    { '111': { name: '智能平台预算A', ...S([0, 1750000, 1750000, 1200000, 260000, 290000], Z) }, '444': { name: '安全合规预算D', ...S([30000, 312000, 342000, 198000, 40000, 104000], Z) }, '555': { name: '备用额度E', ...S([0, 210000, 210000, 190000, 0, 20000], Z) } },
+    { '222': { name: '智能运维预算B', ...S([0, 1400000, 1400000, 980000, 190000, 230000], [0, 210000, 210000, 168000, 0, 42000]) }, '333': { name: '新出现预算C', ...S([0, 800000, 800000, 300000, 70000, 430000], Z) }, '444': { name: '安全合规预算D', ...S([20000, 208000, 228000, 132000, 40000, 56000], Z) } });
+  const snap1 = mk(y + '-10-31',   // 上月（10-31 导入，执行到 9 月；10 月的 PO 还是当月预测）
+    { '111': { name: '智能平台预算A', ...S([0, 1750000, 1750000, 1090000, 134000, 526000], Z) }, '444': { name: '安全合规预算D', ...S([30000, 312000, 342000, 174000, 24000, 144000], Z) }, '555': { name: '备用额度E', ...S([0, 210000, 210000, 190000, 0, 20000], Z) } },
+    { '222': { name: '智能运维预算B', ...S([0, 1400000, 1400000, 840000, 140000, 420000], [0, 210000, 210000, 147000, 0, 63000]) }, '333': { name: '新出现预算C', ...S([0, 800000, 800000, 140000, 160000, 500000], Z) }, '444': { name: '安全合规预算D', ...S([20000, 208000, 228000, 116000, 16000, 96000], Z) } });
+  // PO 明细：PO 金额是整张 PO 的总额（每行重复）；月度执行/预测按行（PO × 花钱项目 × 预算来源）
+  const poRows = [];
+  const pad = n => String(n).padStart(2, '0');
+  const addPo = (no, proj, months, amount, status, name) => {
+    Object.entries(months).forEach(([c, mm]) => poRows.push({ poNo: no, resName: name, status, startDate: y + '-' + pad(+Object.keys(mm)[0]) + '-01', amount, itProject: proj, itProjectCode: proj === PA ? 'ITA' : 'ITB', budgetCode: c, months: Object.fromEntries(Object.entries(mm).map(([k, v]) => [+k, v])) }));
   };
+  [[3, { 111: 150000, 444: 24000, 555: 30000 }, { 222: 120000, 444: 16000 }],
+   [4, { 111: 150000, 444: 24000, 555: 30000 }, { 222: 120000, 444: 16000 }],
+   [5, { 111: 140000, 444: 18000, 555: 20000 }, { 222: 110000, 444: 12000 }],
+   [6, { 111: 150000, 444: 24000, 555: 30000 }, { 222: 120000, 444: 16000 }],
+   [7, { 111: 160000, 444: 24000, 555: 40000 }, { 222: 130000, 444: 16000 }],
+   [8, { 111: 160000, 444: 24000 }, { 222: 120000, 333: 60000, 444: 16000 }],
+   [9, { 111: 160000, 444: 36000 }, { 222: 120000, 333: 80000, 444: 24000 }]].forEach(([mo, a, b]) => {
+    const f = o => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { [mo]: v }]));
+    addPo('PO-A' + mo, PA, f(a), sum(Object.values(a)), 'CLOSED', mo + '月人力外包');
+    addPo('PO-B' + mo, PB, f(b), sum(Object.values(b)), 'CLOSED', mo + '月人力外包');
+  });
+  // 9 月还有一张没关闭的 PO（钱已全部执行，但未验收）：它的已执行额可以在预算项之间调——「备用额度（不考核）」有富余，可调给缺口的「盘古平台建设」
+  addPo('PO-A09b', PA, { 555: { 9: 40000 }, 111: { 9: 20000 } }, 60000, 'OPEN', '9月驻场支持');
+  // 10 月的 PO 下多了：没花完的部分还冻着，验收后返还到各自的钱包
+  addPo('PO-A10', PA, { 111: { 10: 110000, 11: 20000 }, 444: { 10: 24000 } }, 170000, 'OPEN', '10月人力外包');
+  addPo('PO-B10', PB, { 222: { 10: 140000, 11: 30000 }, 333: { 10: 160000, 11: 10000 }, 444: { 10: 16000 } }, 400000, 'OPEN', '10月人力外包');
+  // 11 月当月在执行：两张 PO 的预测合计比团队需求多（前面几个月习惯性多下）
+  addPo('PO-A11', PA, { 111: { 11: 240000 }, 444: { 11: 40000 } }, 290000, 'OPEN', '11月人力外包');
+  addPo('PO-B11', PB, { 222: { 11: 160000 }, 333: { 11: 60000 }, 444: { 11: 40000 } }, 270000, 'OPEN', '11月人力外包');
+  const availOf = o => Object.fromEntries(Object.entries(o).map(([c, r]) => [c, (r.itw.avail || 0) + (r.od.avail || 0)]));
   return {
-    schemaVersion: 3,
-    meta: { year: y, updateFreqDays: 14 },
-    years: { [y]: { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: y + '-10-15' } },
+    schemaVersion: 4,
+    meta: { year: y, updateFreqDays: 14, lastHcCheck: t },
+    years: { [y]: { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: t } },
     team: [
-      { id: 'tg1', kind: 'po', name: '高级开发', headcount: 1, rate: 2000, project: '花钱项目A' },
-      { id: 'tg2', kind: 'po', name: '初级开发', headcount: 1, rate: 1100, project: '花钱项目B' },
-      { id: 'tg3', kind: 'od', name: 'OD工程师', headcount: 1, rate: 10500, project: '花钱项目A' }
+      { id: 'tg1', kind: 'po', name: '高级开发', headcount: 8, rate: 2000, project: '' },
+      { id: 'tg2', kind: 'po', name: '初级开发', headcount: 4, rate: 1200, project: '' },
+      { id: 'tg3', kind: 'od', name: 'OD工程师', headcount: 2, rate: 10500, project: '' }
     ],
     plans: [
-      { id: 'pl1', year: y, code: '111', name: '盘古平台建设', amountW: 5, target: 1, note: '要求100%' },
-      { id: 'pl2', year: y, code: '222', name: '智能运维中台', amountW: 3, note: '' },
-      { id: 'pl3', year: y, code: '', name: '数据治理专项', amountW: 2.5, target: 0, note: '不考核，等授予后关联' },
-      { id: 'pl4', year: y, code: '444', name: '安全合规加固', amountW: 1.5, target: 0.92, note: '目标92%' }
+      { id: 'pl1', year: y, code: '111', name: '盘古平台建设', amountW: 25, target: 1, note: '要求100%' },
+      { id: 'pl2', year: y, code: '222', name: '智能运维中台', amountW: 20, note: '' },
+      { id: 'pl3', year: y, code: '', name: '数据治理专项', amountW: 5, target: 0.92, note: '平台还没出现，等 BA 申请' },
+      { id: 'pl4', year: y, code: '444', name: '安全合规加固', amountW: 8, target: 0.92, planProject: PA + ',' + PB, note: '两个花钱项目下都有钱' },
+      { id: 'pl6', year: y, code: '555', name: '备用额度（不考核）', amountW: 3, target: 0, note: '' }
     ],
     grantLogs: [
-      { date: y + '-03-15', code: '111', amountCny: 150000, note: '首批' },
-      { date: y + '-08-20', code: '111', amountCny: 100000, note: '' },
-      { date: y + '-04-10', code: '222', amountCny: 200000, note: '' },
-      { date: y + '-06-05', code: '444', amountCny: 80000, note: '' }
+      { date: y + '-03-15', code: '111', amountCny: 1000000, note: '首批' },
+      { date: y + '-08-20', code: '111', amountCny: 750000, note: '' },
+      { date: y + '-04-10', code: '222', amountCny: 1400000, note: '' },
+      { date: y + '-06-05', code: '444', amountCny: 520000, note: 'A 项目 31.2 万 + B 项目 20.8 万' },
+      { date: y + '-05-20', code: '555', amountCny: 210000, note: '' }
     ],
     execSnaps: [snap1, snap2],
-    poDataByYear: { [y]: {
-      updatedAt: t, asOf: 11,
-      rows: [
-        { poNo: 'PO-001', resName: '三月人力外包', status: 'CLOSED', startDate: y + '-03-01', amount: 120000, itProject: '花钱项目A', budgetCode: '111', months: { 3: 50000, 4: 40000, 5: 30000 } },
-        { poNo: 'PO-003', resName: '十月算力扩容', status: 'OPEN', startDate: y + '-10-01', amount: 90000, itProject: '花钱项目A', budgetCode: '111', months: { 10: 30000, 11: 35000, 12: 25000 } },
-        { poNo: 'PO-002', resName: '五月平台开发', status: 'CLOSED', startDate: y + '-05-01', amount: 100000, itProject: '花钱项目B', budgetCode: '222', months: { 5: 60000, 6: 40000 } },
-        { poNo: 'PO-004', resName: '十一月运维支持', status: 'OPEN', startDate: y + '-11-01', amount: 70000, itProject: '花钱项目B', budgetCode: '222', months: { 11: 45000, 12: 25000 } },
-        { poNo: 'PO-006', resName: '十月治理咨询', status: 'OPEN', startDate: y + '-10-01', amount: 50000, itProject: '花钱项目B', budgetCode: '333', months: { 10: 20000, 11: 20000, 12: 10000 } },
-        { poNo: 'PO-005', resName: '六月安全评估', status: 'CLOSED', startDate: y + '-06-01', amount: 55000, itProject: '花钱项目A', budgetCode: '444', months: { 6: 30000, 7: 25000 } },
-        { poNo: 'PO-007', resName: '十一月渗透测试', status: 'OPEN', startDate: y + '-11-01', amount: 30000, itProject: '花钱项目A', budgetCode: '444', months: { 11: 18000, 12: 12000 } }
-      ]
-    } },
-    updatedAt: { plan: t, grants: t, exec: t, po: t }
+    poDataByYear: { [y]: { updatedAt: t, asOf: 11, rows: poRows } },
+    projAlias: { ITA: PA, ITB: PB },
+    projPrints: { [PA]: { date: y + '-11-18', avail: availOf(snap2.byProject[PA]) }, [PB]: { date: y + '-11-18', avail: availOf(snap2.byProject[PB]) } },
+    importLogs: [], importNotes: [],
+    updatedAt: { plan: t, grants: t, exec: t, po: t, team: t }
   };
 }
 
@@ -2130,13 +2568,14 @@ async function handleAction(action, el, e) {
   const id = el.dataset.id;
   if (action === 'modal:close') { if (e.target === el) closeModal(); return; }
   if (action === 'goto:data') return switchTab('data');
+  if (action === 'goto:po') return switchTab('po');
 
   if (action === 'import:open') return importModal();
   if (action === 'import:pick') { const inp = $('#fileInput'); if (inp) inp.click(); return; }
   if (action === 'import:all') return importAll();
   if (action === 'po:exclAdd') {
     const c0 = calc();
-    const row = c0.poList.find(r => r.poNo + '|' + (r.itProject || '') === el.dataset.key);
+    const row = c0.poList.find(r => r.poNo === el.dataset.key);   // 挂靠按 PO 编号整张剔除（含它在各花钱项目下的行）
     if (!row) return;
     if (!confirm('将 PO「' + (row.resName || row.poNo) + '」标记为挂靠剔除？\n\n影响：从你的 PO 台账/在途冻结/预计返还/月度图/PO建议中剔除；其<b>已执行金额仍计入执行率</b>（平台口径，钱确实从预算花了）。可随时恢复。'.replace(/<[^>]+>/g, ''))) return;
     const yp = yearParams(curYear());
@@ -2148,7 +2587,7 @@ async function handleAction(action, el, e) {
   }
   if (action === 'po:exclDel') {
     const yp = yearParams(curYear());
-    yp.excludedPos = (yp.excludedPos || []).filter(k => k !== el.dataset.key);
+    yp.excludedPos = (yp.excludedPos || []).filter(k => String(k).split('|')[0] !== el.dataset.key);
     state.years[curYear()] = yp;
     save();
     return;
@@ -2313,8 +2752,10 @@ async function handleAction(action, el, e) {
     if (from == null) { alert('没有可复制的上一年数据，请直接录入规划'); return; }
     if (state.plans.some(p => p.year === Y)) { alert(Y + ' 年已有规划，无需开启'); return; }
     if (!confirm('开启 ' + Y + ' 年度：复制 ' + from + ' 年的规划（编码关联沿用、金额可再调）与年度参数（团队配置共用），确认？')) return;
-    plansOf(from).forEach(p => state.plans.push({ id: uid(), year: Y, code: p.code, name: p.name, amountUsd: p.amountUsd, note: '复制自' + from }));
-    state.years[Y] = Object.assign({}, yearParams(from), { lastHcCheck: '' });
+    plansOf(from).forEach(p => state.plans.push({ id: uid(), year: Y, code: p.code || '', name: p.name, amountW: wusdOf(p), target: p.target != null ? p.target : null, planProject: p.planProject || '', dead: false, note: '复制自' + from }));
+    const ypFrom = yearParams(from);
+    delete ypFrom.excluded; delete ypFrom.excludedPos;   // 剔除项按年独立：新年不沿用上年的剔除
+    state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '' });
     touch('plan'); save();
     alert(Y + ' 年度已开启：规划 ' + plansOf(Y).length + ' 项已复制。请到「数据管理」核对金额与汇率，然后正常导入新年数据。');
     return;
@@ -2350,6 +2791,7 @@ function switchTab(tab) {
   if (tab === 'now') renderNow();
 }
 
+document.addEventListener('toggle', e => { const t = e.target; if (t && t.classList && t.classList.contains('fold')) foldOpen = t.open; }, true);   // 记住推演表的展开状态
 document.addEventListener('click', e => {
   const navBtn = e.target.closest('#tabNav button[data-tab]');
   if (navBtn) { switchTab(navBtn.dataset.tab); return; }
@@ -2361,6 +2803,7 @@ document.addEventListener('click', e => {
 document.addEventListener('change', e => {
   if (e.target.id === 'snapDate' && importCtx) { importCtx.snapDate = e.target.value; return; }
   if (e.target.matches('[data-fkind]') && importCtx) { importCtx.files[+e.target.dataset.fkind].kind = e.target.value; return; }
+  if (e.target.matches('[data-fproj]') && importCtx) { importCtx.files[+e.target.dataset.fproj].project = e.target.value.trim(); return; }
   if (e.target.matches('[data-pedit]')) {   // 规划表内联编辑（失焦保存）
     const id2 = e.target.dataset.pedit, f = e.target.dataset.f, p = state.plans.find(x => x.id === id2);
     if (!p) return;
@@ -2403,18 +2846,19 @@ document.addEventListener('change', e => {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        let obj = JSON.parse(reader.result);
-        if (obj && obj.schemaVersion === 2) obj = migrate(obj);   // 旧版备份自动升级
-        if (!obj || obj.schemaVersion !== 3) throw new Error('格式不符');
+        let obj = upToV4(JSON.parse(reader.result));
+        if (!obj) throw new Error('格式不符');
         if (obj.type === 'budget-dash-config') {
           if (!confirm('恢复配置包：将覆盖当前的规划、团队配置和参数（不影响已导入数据），确认？')) return;
           state.meta = Object.assign({}, state.meta, obj.meta);
           state.years = obj.years || state.years;
           state.plans = obj.plans || []; state.team = obj.team || [];
+          if (obj.projAlias) state.projAlias = obj.projAlias;
           save(); alert('配置已恢复');
         } else if (obj.type === 'budget-dash-data') {
           if (!confirm('恢复数据包：将覆盖执行表快照、PO明细和授予流水（不影响配置），确认？')) return;
           state.execSnaps = obj.execSnaps || []; state.poDataByYear = obj.poDataByYear || {}; state.grantLogs = obj.grantLogs || [];
+          if (obj.importLogs) state.importLogs = obj.importLogs; if (obj.projPrints) state.projPrints = obj.projPrints; if (obj.projAlias) state.projAlias = obj.projAlias;
           save(); alert('数据已恢复');
         } else {
           if (!Array.isArray(obj.plans)) throw new Error('格式不符');
