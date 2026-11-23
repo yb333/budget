@@ -1159,6 +1159,14 @@ function calc() {
     });
   }
 
+  // OD 额度不足预警（执行>可用 或 可用=0但有执行 → 说明调拨不够）
+  codes.forEach(code => {
+    const s = per[code];
+    if ((s.odAvail || 0) < (s.odExec || 0) && (s.odExec || 0) > 0) {
+      grantWarn.push({ name: (s.plan ? s.plan.name : s.name) + ' OD', msg: 'OD 已执行 ' + fmtCny(s.odExec) + ' > 可用 ' + fmtCny(s.odAvail) + '——调拨不足，请增加 OD 额度' });
+    }
+  });
+
   // 授予进度（催 BA）
   const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
   const grantWarn = [];
@@ -1187,6 +1195,27 @@ function calc() {
       const b = snap.rows[c].itw.granted || 0;
       if (logs[c] != null && Math.abs(logs[c] - b) > Math.max(1000, b * 0.02)) grantChecks.push({ code: c, name: snap.rows[c].name, logSum: logs[c], granted: b });
     });
+  }
+
+  const r2_forecastByCode = {};
+  codes.forEach(code => {
+    const s = per[code];
+    r2_forecastByCode[code] = (s.itwFc || 0) + (s.odAvail || 0) * 0.8;   // 粗估：PO预测+OD可用的80%
+  });
+  // 年底留钱：预计未执行完项目的剩余（可留给1月PO）
+  let yearEndCarry = null;
+  if (curM >= 11 && planCnyTotal > 0) {
+    const items = [];
+    codes.forEach(code => {
+      const s = per[code];
+      if (!s.plan || s.plan.dead) return;
+      const tgt = s.target || m.execRateTarget;
+      if (tgt === 0) return;   // 不考核的不管
+      const projEnd = s.exec + (r2_forecastByCode[code] || 0);  // 预计年底执行
+      const remaining = Math.max(s.planCny * tgt - projEnd, 0);
+      if (remaining > 1000) items.push({ code, name: s.plan.name, remaining, rate: s.execRate });
+    });
+    if (items.length) yearEndCarry = { items, total: sum(items, x => x.remaining) };
   }
 
   // ===== 下PO决策引擎：三档 = 自然需求 ± 合理波动（非达标缺口） =====
@@ -1232,7 +1261,7 @@ function calc() {
     Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, poDecision, itwExec, odExec, execTotal, execRate,
     timeProg, curM, poMonthlyAct, poMonthlyFc, poActByCode, poFrozen, poReturn, openCnt,
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
-    poAdvice, odAdvice, grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
+    poAdvice, odAdvice, grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc, yearEndCarry,
     poExcludedRows, poExclAct, poExclActByCode,
     workdays, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend },
     poAvg, poAvgWd,
@@ -1317,7 +1346,7 @@ function renderNow() {
     ? '距目标缺口 <b>' + fmtCny(m.execRateTarget * c.planCnyTotal - c.forecastEnd) + '</b>'
     : '可达目标 ✓';
   let actTxt = [];
-  if (c.poAdvice && c.poAdvice.newIssue > 0) actTxt.push('下月 PO 新下 <b>' + fmtCny(c.poAdvice.newIssue) + '</b>');
+  if (c.poDecision && c.poDecision.suggested > 0) actTxt.push('下月 PO 建议 <b>' + fmtCny(c.poDecision.suggested) + '</b>');
   if (c.odAdvice && c.odAdvice.transfer > 0) actTxt.push('OD 调拨 <b>' + fmtCny(c.odAdvice.transfer) + '</b>');
   if (c.unmatched.length) actTxt.push('关联 ' + c.unmatched.length + ' 个编码');
   if (c.grantWarn.filter(w => w.msg).length) actTxt.push('催 BA ' + c.grantWarn.filter(w => w.msg).length + ' 项');
@@ -1425,6 +1454,8 @@ function renderNow() {
           '<td class="num">' + fmtPct(r.rate) + ' <span class="muted">(' + fmtPct(r.target) + ')</span>' + (r.urgency > 0.15 ? ' <span style="color:var(--red)">⚠落后</span>' : '') + '</td>' +
           '<td>' + (r.next ? '→ ' + esc(r.next) : '—') + '</td></tr>'
         ).join('') + '</tbody></table>' +
+        (c.yearEndCarry ? '<div class="cons-diff info" style="margin-top:8px"><b>📅 年底留钱策略</b>：以下项目预计执行不完，剩余合计 <b>' + fmtCny(c.yearEndCarry.total) + '</b> 可留给 1 月 PO（不计今年执行率）：<br>' +
+          c.yearEndCarry.items.map(x => esc(x.name) + ' 余 ' + fmtCny(x.remaining)).join(' · ') + '</div>' : '') +
         '<div class="muted" style="margin-top:6px">' +
         '排序逻辑：剩余额度 × 执行率落后程度——<b>钱多且落后</b>的先用，用完自然轮到下一个，不用每次都分好几个来源。' +
         (d.yearEnd ? ' <b style="color:var(--red)">⚠ 年底提醒：12月 PO 尽量当月执行完，多余的冻结跨年。</b>' : '') +
@@ -1552,7 +1583,7 @@ function renderBudget() {
     const tgtTxt = s.target === 0 ? '<span class="muted">不考核</span>' : (s.targetInherit ? '<span title="继承年度默认">' + fmtPct(s.target) + '<span class="muted">·默认</span></span>' : '<b>' + fmtPct(s.target) + '</b>');
     rows.push('<tr>' +
       '<td><b>' + esc(s.name) + '</b> <span class="muted">[' + esc(code) + ']</span></td>' +
-      '<td>' + (s.plan ? esc(s.plan.name) : '<span class="btn-row"><button class="btn small" data-action="link:manage">🔗 关联规划</button> <button class="btn small danger" data-action="excl:add" data-id="' + esc(code) + '" title="不在本年规划/挂靠项：剔除后其执行与 PO 均不参与计算">🚫 剔除</button></span>') + '</td>' +
+      '<td>' + (s.plan ? esc(s.plan.name) + (s.plan.planProject ? ' <span class="muted">[' + esc(s.plan.planProject) + ']</span>' : '') : '<span class="btn-row"><button class="btn small" data-action="link:manage">🔗 关联规划</button> <button class="btn small danger" data-action="excl:add" data-id="' + esc(code) + '" title="不在本年规划/挂靠项：剔除后其执行与 PO 均不参与计算">🚫 剔除</button></span>') + '</td>' +
       '<td class="num">' + (s.plan ? fmtWusd(wusdOf(s.plan)) : '—') + '</td>' +
       '<td class="num">' + fmtCny(s.planCny) + '</td>' +
       '<td class="num">' + fmtCny(s.avail) + '</td>' +
@@ -1730,6 +1761,7 @@ function planModal(p) {
     field('规划名称（年初口径）', '<input id="f-name" type="text" value="' + esc(p.name) + '">') +
     field('金额（WUSD·万美金，可带小数）', '<input id="f-amount" type="text" inputmode="decimal" value="' + (p.amountW != null && p.amountW !== '' ? p.amountW : '') + '" placeholder="如 5.5 = $55,000">') +
     field('平台编码（可留空，授予后关联）', '<input id="f-code" type="text" value="' + esc(p.code || '') + '" placeholder="如 111">') +
+    field('所属花钱项目（如：项目A / 项目A,B）', '<input id="f-pplanproject" type="text" value="' + esc(p.planProject || '') + '" placeholder="区分打到哪些花钱项目">') +
     field('执行率目标（%）', '<input id="f-target" type="text" inputmode="decimal" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" placeholder="留空=年度默认；0=不考核，如 100 / 92">') +
     field('备注', '<input id="f-note" type="text" value="' + esc(p.note || '') + '">') +
     '</div><div class="modal-actions"><button class="btn" data-action="modal:close">取消</button><button class="btn primary" data-action="plan:save" data-id="' + (isNew ? '' : p.id) + '">保存</button></div>');
@@ -2156,7 +2188,7 @@ async function handleAction(action, el, e) {
     const name = $('#f-name').value.trim(), amountW = parseWusd($('#f-amount').value);
     if (!name) { alert('请填写规划名称'); return; }
     if (amountW == null || amountW <= 0) { alert('请填写有效的万美金金额（如 5.5）'); return; }
-    const code = $('#f-code').value.trim(), note = $('#f-note').value.trim();
+    const code = $('#f-code').value.trim(), note = $('#f-note').value.trim(), planProject = $('#f-pplanproject') ? $('#f-pplanproject').value.trim() : '';
     const tRaw = $('#f-target').value.trim();
     let target = null;
     if (tRaw !== '') {
@@ -2164,8 +2196,8 @@ async function handleAction(action, el, e) {
       if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('执行率目标应为 0~100 的数字，或留空跟随年度默认'); return; }
       target = tv / 100;
     }
-    if (id) Object.assign(state.plans.find(p => p.id === id), { name, amountW, code, target, note });
-    else state.plans.push({ id: uid(), year: curYear(), name, amountW, code, target, note });
+    if (id) Object.assign(state.plans.find(p => p.id === id), { name, amountW, code, target, note, planProject });
+    else state.plans.push({ id: uid(), year: curYear(), name, amountW, code, target, note, planProject });
     touch('plan'); save(); closeModal();
     return;
   }
