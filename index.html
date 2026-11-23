@@ -1232,8 +1232,12 @@ function calc() {
     const floor = Math.max(natural - halfDay, 0);       // 下限：请假多于加班
     const suggested = natural;                            // 建议：正常月份
     const ceiling = yearEnd ? natural : natural + oneDay; // 上限：加班/加人（年底不加，跨年=冻结）
-    // 达标缺口（单独提示，不灌进 PO 金额）
-    const gap = poAdvice.gap > 0 ? poAdvice.gap : 0;
+    // 达标缺口：按各项目标加权（不考核/失效不计入）
+    const totalTargetExec = sum(plansY.filter(pp => !pp.dead && pp.target !== 0), pp => {
+      const tt = pp.target != null ? pp.target : m.execRateTarget;
+      return tt * wusdOf(pp) * 10000 * fx;
+    });
+    const gap = Math.max(totalTargetExec - forecastEnd, 0);
     // 轮换制分配：按「剩余 × 执行率落后」排序，优先用一个来源，用完轮换下一个
     const ranked = codes
       .filter(code => per[code].itwRemain > 100 && !(per[code].plan && per[code].plan.dead))
@@ -2309,6 +2313,8 @@ document.addEventListener('change', e => {
     const cnyCell = $('#pcny-' + id2);
     if (cnyCell) cnyCell.textContent = fmtCny(wusdOf(p) * 10000 * yearParams(curYear()).fxRate);
     renderBanner();
+    // 联动刷新：首页决策卡/行动清单/预算来源表（不重建规划表避免丢焦点）
+    renderNow(); renderBudget(); renderPO(); renderData();
     return;
   }
   if (e.target.matches('[data-linkcode]')) {
