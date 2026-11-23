@@ -1404,7 +1404,17 @@ function renderNow() {
         tier('② 建议下这个数 ★', d.suggested, '团队自然需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '×出勤' + d.attend + '）', 'border:2px solid var(--blue);background:var(--blue-bg)') +
         tier(d.yearEnd ? '③ 上限（年底：严格按建议）' : '③ 上限（加班/加人时）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，不加缓冲' : '建议 + ' + fmtCny(d.oneDay) + '（1天日额，覆盖加班+新人）', 'border:1px solid var(--amber)') +
         '</div>' +
-        (d.gap > 0 ? '<div class="cons-diff warn" style="margin-top:8px">📊 距目标缺口 ¥' + fmtCny(d.gap).replace('¥','') + '（不含在本 PO 金额中）——建议通过 <b>OD 补足</b>（额度够时即时扣减），或评估目标合理性/催 BA。</div>' : '') +
+        (d.gap > 0 ? (() => {
+          const monthsLeft = 13 - d.nextM;
+          const odAvgRate = c.team && c.team.odGroups.length ? Math.round(c.team.theoryOd / Math.max(sum(c.team.odGroups, g => g.headcount), 1)) : 25000;
+          const odNeed = Math.ceil(d.gap / (odAvgRate * Math.max(monthsLeft, 1)));
+          const poAvgDaily = d.poDaily > 0 ? d.poDaily : 3100;
+          const poNeed = Math.ceil(d.gap / (poAvgDaily * d.wd * Math.max(monthsLeft, 1)));
+          return '<div class="cons-diff warn" style="margin-top:8px"><b>距目标缺口 ' + fmtCny(d.gap) + '</b>（不含在本 PO 金额中），两条路二选一：<br>' +
+            '🅰 <b>年底临时加 OD</b>：加 <b>' + odNeed + ' 人</b>（平均月单价 ' + fmtCny(odAvgRate) + ' × ' + monthsLeft + ' 个月 = ' + fmtCny(odNeed * odAvgRate * monthsLeft) + '）——即时生效，月底扣减即计入<br>' +
+            '🅱 <b>PO 团队招人</b>：招 <b>' + poNeed + ' 人</b>（平均日单价 ' + fmtCny(poAvgDaily) + ' × ' + d.wd + ' 工作日 × ' + monthsLeft + ' 个月）——长期方案，但招人→产出有滞后<br>' +
+            '<span class="muted">缺口小选A（灵活），缺口大选B（可持续）；两者可组合。也可调目标/催 BA 从分母侧解决。</span></div>';
+        })() : '') +
         '<div style="margin-top:12px"><b style="font-size:13px">分配方案（轮换制：优先用一个来源，用完轮换下一个）</b></div>' +
         '<table class="tbl"><thead><tr><th></th><th>预算来源</th><th class="num">本次分配</th><th class="num">IT外包剩余</th><th class="num">执行率(目标)</th><th>下次轮换</th></tr></thead><tbody>' +
         d.alloc.map((r, i) =>
