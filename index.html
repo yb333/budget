@@ -828,7 +828,8 @@ function parseTeamPlan(rows) {
     let kind = kindCol >= 0 ? (/od/i.test(String(r[kindCol] || '')) ? 'od' : /po/i.test(String(r[kindCol] || '')) ? 'po' : '') : '';
     if (!kind) kind = /月/.test(String(header[priceCol] || '')) ? 'od' : (/日/.test(String(header[priceCol] || '')) ? 'po' : '');
     if (!kind) { notes.push('第 ' + (i + 2) + ' 行无法判断 PO/OD（类型列填 PO 或 OD，或单价列名含 日/月）'); return; }
-    out.push({ ym, end, kind, rate, count: cnt, note: noteCol >= 0 ? String(r[noteCol] || '').trim() : '' });
+    const ownCol = col(/归属/);   // 归属（可选）：临时的 PO 人员归哪张 PO（值与「po归属」页签里的一致）
+    out.push({ ym, end, kind, rate, count: cnt, own: ownCol >= 0 ? String(r[ownCol] || '').trim() : '', note: noteCol >= 0 ? String(r[noteCol] || '').trim() : '' });
   });
   return { list: out, notes };
 }
@@ -1276,11 +1277,15 @@ function calc() {
     perms.filter(p => p.kind === kind && !ownerOf(p)).forEach(p => { acc[p.rate] = (acc[p.rate] || 0) + deltaAt(p, ym); });
     return Object.entries(acc).filter(([, c]) => c > 0).map(([rate, c]) => ({ rate: +rate, headcount: c }));
   };
-  // 临时人员：生效年月 ≤ 该月 < 结束年月
+  // 临时人员：生效年月 ≤ 该月 < 结束年月。PO 的临时人员带上「归属」（归哪张 PO），没填的并入"未标归属"
   const tempAt = (kind, yy, mo) => {
     const acc = {}, ym = ymOf(yy, mo);
-    temps.filter(p => p.kind === kind && p.ym <= ym && ym < p.end).forEach(p => { acc[p.rate] = (acc[p.rate] || 0) + p.count; });
-    return Object.entries(acc).filter(([, c]) => c !== 0).map(([rate, c]) => ({ rate: +rate, headcount: c }));
+    temps.filter(p => p.kind === kind && p.ym <= ym && ym < p.end).forEach(p => {
+      const k = p.rate + '|' + (kind === 'po' ? (p.own || '') : '');
+      acc[k] = acc[k] || { rate: p.rate, headcount: 0, own: kind === 'po' ? (p.own || '') : '' };
+      acc[k].headcount += p.count;
+    });
+    return Object.values(acc).filter(x => x.headcount !== 0);
   };
   const poDailyAt = (yy, mo) => sum(poGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('po', yy, mo), v => v.headcount * v.rate) + sum(tempAt('po', yy, mo), v => v.headcount * v.rate);
   const odCostAt = (yy, mo) => sum(odGroups, g => hcAt(g, yy, mo) * (g.rate || 0)) + sum(virtualAt('od', yy, mo), v => v.headcount * v.rate) + sum(tempAt('od', yy, mo), v => v.headcount * v.rate);
@@ -1288,11 +1293,12 @@ function calc() {
   const poDaily = hasPoCfg ? poDailyAt(Y, curMo) : 0;      // 现在的 PO 日额（含已生效的计划）
   const theoryOd = hasOdCfg ? odCostAt(Y, curMo) : 0;      // 现在的 OD 月额
   const theoryPo = mo => poDailyAt(Y, mo) * workdays(mo) * attend;
-  // 按「PO归属」拆分某年月的 PO 日额（来自团队 Excel 的归属页签 / 归属列）；没标归属的（含临时 PO 人员）并成一组
+  // 按「PO归属」拆分某年月的 PO 日额（来自团队 Excel 的归属页签 / 归属列）；没标归属的并成一组
   const poSplit = (yy, mo) => {
     const acc = {};
     poGroups.forEach(g => { const h = hcAt(g, yy, mo); if (h > 0) { const k = g.poGroup || ''; acc[k] = acc[k] || { daily: 0, hc: 0 }; acc[k].daily += h * (g.rate || 0); acc[k].hc += h; } });
-    virtualAt('po', yy, mo).concat(tempAt('po', yy, mo)).forEach(v => { acc[''] = acc[''] || { daily: 0, hc: 0 }; acc[''].daily += v.headcount * v.rate; acc[''].hc += v.headcount; });
+    virtualAt('po', yy, mo).forEach(v => { acc[''] = acc[''] || { daily: 0, hc: 0 }; acc[''].daily += v.headcount * v.rate; acc[''].hc += v.headcount; });
+    tempAt('po', yy, mo).forEach(v => { const k = v.own || ''; acc[k] = acc[k] || { daily: 0, hc: 0 }; acc[k].daily += v.headcount * v.rate; acc[k].hc += v.headcount; });
     return Object.entries(acc).map(([label, x]) => ({ label, daily: x.daily, hc: x.hc })).sort((a, b) => b.daily - a.daily);
   };
   /* ---- PO：PO 级字段按 PO 编号只取一次；行级（月度执行/预测）相加 ----
@@ -2370,7 +2376,7 @@ function renderData() {
       '<table class="tbl"><thead><tr><th>生效年月</th><th>结束年月</th><th>类型</th><th class="num">单价</th><th class="num">人数</th><th>备注</th><th>对决策的影响</th></tr></thead><tbody>' +
       tPlan.slice().sort((a, b) => a.ym < b.ym ? -1 : 1).map(p => {
         const ended = p.end && p.end <= ymNow;
-        return '<tr' + ((ended || (!p.end && p.ym < ymNow)) ? ' style="opacity:.65"' : '') + '><td>' + esc(ymTxt(p.ym)) + '</td><td>' + (p.end ? esc(ymTxt(p.end)) : '<span class="muted">常驻</span>') + '</td><td>' + (p.kind === 'po' ? 'PO' : 'OD') + '</td><td class="num">' + fmtCny(p.rate) + '</td><td class="num">' + (p.count > 0 ? '+' : '') + p.count + '</td><td>' + esc(p.note || '') + '</td><td class="muted">' + planEffect(p) + (ended ? '；已结束' : '') + '</td></tr>';
+        return '<tr' + ((ended || (!p.end && p.ym < ymNow)) ? ' style="opacity:.65"' : '') + '><td>' + esc(ymTxt(p.ym)) + '</td><td>' + (p.end ? esc(ymTxt(p.end)) : '<span class="muted">常驻</span>') + '</td><td>' + (p.kind === 'po' ? 'PO' : 'OD') + (p.own ? '·归 ' + esc(p.own) : '') + '</td><td class="num">' + fmtCny(p.rate) + '</td><td class="num">' + (p.count > 0 ? '+' : '') + p.count + '</td><td>' + esc(p.note || '') + '</td><td class="muted">' + planEffect(p) + (ended ? '；已结束' : '') + '</td></tr>';
       }).join('') + '</tbody></table>' +
       '<div class="muted" style="margin-top:6px">各月人数（含计划）与对应的扣减 / 需求：</div>' +
       '<table class="tbl"><thead><tr>' + planMos.map(mo => '<th class="num">' + (mo <= 12 ? mo + '月' : '明年1月') + '</th>').join('') + '</tr></thead><tbody>' +
@@ -2718,8 +2724,9 @@ function demoState() {
       { id: 'tg2', kind: 'po', name: '初级开发', headcount: 4, rate: 1200, project: '', poGroup: 'PO乙' },
       { id: 'tg3', kind: 'od', name: 'OD工程师', headcount: 2, rate: 10500, project: '' }
     ],
-    teamPlan: [   // 变动计划（示例）：12 月临时加 2 个 OD，到明年 1 月前为止（年终冲量）；明年 1 月 PO 团队进 3 个高级开发（常驻）
+    teamPlan: [   // 变动计划（示例）：12 月临时加 2 个 OD 和 2 个 PO 人员（归 PO甲），到明年 1 月前为止；明年 1 月 PO 团队进 3 个高级开发（常驻）
       { ym: y + '-12', end: (y + 1) + '-01', kind: 'od', rate: 10500, count: 2, note: '年终冲量' },
+      { ym: y + '-12', end: (y + 1) + '-01', kind: 'po', rate: 2000, count: 2, own: 'PO甲', note: '12月临时支援' },
       { ym: (y + 1) + '-01', end: '', kind: 'po', rate: 2000, count: 3, note: '明年 1 月到岗' }
     ],
     plans: [
