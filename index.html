@@ -1393,7 +1393,7 @@ function renderNow() {
     ? '距目标缺口 <b>' + fmtCny(m.execRateTarget * c.planCnyTotal - c.forecastEnd) + '</b>'
     : '可达目标 ✓';
   let actTxt = [];
-  if (c.poDecision && c.poDecision.suggested > 0) actTxt.push('下月 PO 建议 <b>' + fmtCny(c.poDecision.suggested) + '</b>');
+  if (c.poDecision && c.poDecision.totalDecPO > 0) actTxt.push('下月 PO <b>' + fmtCny(c.poDecision.totalDecPO) + '</b>' + (c.poDecision.janShort > 0 ? ' ⚠1月缺' : ''));
   if (c.odAdvice && c.odAdvice.transfer > 0) actTxt.push('OD 调拨 <b>' + fmtCny(c.odAdvice.transfer) + '</b>');
   if (c.unmatched.length) actTxt.push('关联 ' + c.unmatched.length + ' 个编码');
   if (c.grantWarn.filter(w => w.msg).length) actTxt.push('催 BA ' + c.grantWarn.filter(w => w.msg).length + ' 项');
@@ -1531,34 +1531,6 @@ function renderNow() {
         box.innerHTML = html;
       }
 
-      box.innerHTML += (d.gap > 0 ? (() => {
-          const monthsLeft = 13 - d.nextM;
-          const odAvgRate = c.team && c.team.odGroups.length ? Math.round(c.team.theoryOd / Math.max(sum(c.team.odGroups, g => g.headcount), 1)) : 25000;
-          const odNeed = Math.ceil(d.gap / (odAvgRate * Math.max(monthsLeft, 1)));
-          const poAvgDaily = d.poDaily > 0 ? d.poDaily : 3100;
-          const poNeed = Math.ceil(d.gap / (poAvgDaily * d.wd * Math.max(monthsLeft, 1)));
-          return '<div class="cons-diff warn" style="margin-top:8px"><b>距目标缺口 ' + fmtCny(d.gap) + '</b>（不含在本 PO 金额中），两条路二选一：<br>' +
-            '🅰 <b>年底临时加 OD</b>：加 <b>' + odNeed + ' 人</b>（平均月单价 ' + fmtCny(odAvgRate) + ' × ' + monthsLeft + ' 个月 = ' + fmtCny(odNeed * odAvgRate * monthsLeft) + '）——即时生效，月底扣减即计入<br>' +
-            '🅱 <b>PO 团队招人</b>：招 <b>' + poNeed + ' 人</b>（平均日单价 ' + fmtCny(poAvgDaily) + ' × ' + d.wd + ' 工作日 × ' + monthsLeft + ' 个月）——长期方案，但招人→产出有滞后<br>' +
-            '<span class="muted">缺口小选A（灵活），缺口大选B（可持续）；两者可组合。也可调目标/催 BA 从分母侧解决。</span></div>';
-        })() : '') +
-        '<div style="margin-top:12px"><b style="font-size:13px">分配方案（轮换制：优先用一个来源，用完轮换下一个）</b></div>' +
-        '<table class="tbl"><thead><tr><th></th><th>预算来源</th><th class="num">本次分配</th><th class="num">IT外包剩余</th><th class="num">执行率(目标)</th><th>下次轮换</th></tr></thead><tbody>' +
-        d.alloc.map((r, i) =>
-          '<tr' + (i === 0 ? ' style="background:var(--blue-bg)"' : '') + '><td><span class="act-no">' + (i + 1) + '</span></td>' +
-          '<td><b>' + esc(r.name) + '</b> <span class="muted">[' + esc(r.code) + ']</span></td>' +
-          '<td class="num"><b style="color:var(--blue);font-size:15px">' + fmtCny(r.alloc) + '</b></td>' +
-          '<td class="num">' + fmtCny(r.remain) + '</td>' +
-          '<td class="num">' + fmtPct(r.rate) + ' <span class="muted">(' + fmtPct(r.target) + ')</span>' + (r.urgency > 0.15 ? ' <span style="color:var(--red)">⚠落后</span>' : '') + '</td>' +
-          '<td>' + (r.next ? '→ ' + esc(r.next) : '—') + '</td></tr>'
-        ).join('') + '</tbody></table>' +
-        (c.yearEndCarry ? '<div class="cons-diff info" style="margin-top:8px"><b>📅 年底留钱策略</b>：以下项目预计执行不完，剩余合计 <b>' + fmtCny(c.yearEndCarry.total) + '</b> 可留给 1 月 PO（不计今年执行率）：<br>' +
-          c.yearEndCarry.items.map(x => esc(x.name) + ' 余 ' + fmtCny(x.remaining)).join(' · ') + '</div>' : '') +
-        '<div class="muted" style="margin-top:6px">' +
-        '排序逻辑：剩余额度 × 执行率落后程度——<b>钱多且落后</b>的先用，用完自然轮到下一个，不用每次都分好几个来源。' +
-        (d.yearEnd ? ' <b style="color:var(--red)">⚠ 年底提醒：12月 PO 尽量当月执行完，多余的冻结跨年。</b>' : '') +
-        (d.itwRemainTotal < d.suggested ? ' <b style="color:var(--amber)">⚠ IT外包剩余 ' + fmtCny(d.itwRemainTotal) + ' 低于建议额，先催验收释放冻结。</b>' : '') +
-        '</div>';
     }
   }
 
@@ -1569,7 +1541,7 @@ function renderNow() {
     const alloc = c.odAdvice.alloc.slice(0, 3).map(x => x.name + ' +' + fmtCny(x.amt)).join(' / ');
     acts.push({ t: '<b>OD 调拨 ' + fmtCny(c.odAdvice.transfer) + '</b>（IT外包→OD，赶在月底扣减前）' + (alloc ? '，参考分配：' + alloc : '') });
   }
-  if (c.poDecision) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>建议 ' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(c.poDecision.floor) + ' ~ ' + fmtCny(c.poDecision.ceiling) + '），分配见决策卡' + (c.poDecision.gap > 0 ? '；缺口 ' + fmtCny(c.poDecision.gap) + ' 建议靠 OD 补' : '') });
+  if (c.poDecision && c.poDecision.totalDecPO > 0) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>' + fmtCny(c.poDecision.totalDecPO) + '</b>（补达标），OD调拨 ' + fmtCny(c.poDecision.totalOdXfer) + '，明细见决策卡' + (c.poDecision.janShort > 0 ? '；⚠1月PO缺 ' + fmtCny(c.poDecision.janShort) : '') });
   c.grantWarn.filter(w => w.msg).slice(0, 2).forEach(w => acts.push({ t: '催 BA：<b>' + esc(w.name) + '</b> ' + esc(w.msg) }));
   if (c.openCnt > 0) acts.push({ t: '催验收：' + c.openCnt + ' 个 OPEN PO 在途冻结 ' + fmtCny(c.poFrozen) + '，预计返还 ' + fmtCny(c.poReturn) + '（验收周期约 1 个月）' });
   if (state.team.length) {
