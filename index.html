@@ -1218,7 +1218,7 @@ function calc() {
     if (items.length) yearEndCarry = { items, total: sum(items, x => x.remaining) };
   }
 
-  // ===== 下PO决策引擎：三档 = 自然需求 ± 合理波动（非达标缺口） =====
+  // ===== 下PO决策引擎 =====
   let poDecision = null;
   if (poAdvice && started) {
     const itwRemainTotal = sum(codes, x => per[x].itwRemain);
@@ -1258,7 +1258,20 @@ function calc() {
       pool -= give;
     }
     for (let i = 0; i < alloc.length; i++) alloc[i].next = i + 1 < alloc.length ? alloc[i + 1].name : null;
-    poDecision = { natural, floor, suggested, ceiling, halfDay, oneDay, gap, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd, poDaily: poGroups.length ? poDaily : 0, attend: m.attendFactor != null ? m.attendFactor : 1 };
+    // ===== 年底双月决策：12月冲目标 + 1月保团队不断档 =====
+    let janPlan = null;
+    if (curM === 11) {
+      const janWd = workdays(1);   // 1月工作日（可能跨年，用推算引擎）
+      const janNatural = poGroups.length ? poDaily * janWd * attend : (poAvg > 0 ? poAvg : 0);
+      // 12月总需求 = max(团队自然需求, 目标缺口需求)（取大——既要团队干活也要冲目标）
+      const decNeed = Math.max(natural, natural + gap);   // gap 已含在 suggested 里
+      // 1月PO = 团队1月整月需求（保不断档）
+      // 可用 = IT外包剩余 + OD剩余（如果可以调拨的话）——简化：只看 IT外包
+      const availableForJan = Math.max(itwRemainTotal - suggested, 0);   // 剩余 - 12月PO建议
+      const janShort = Math.max(janNatural - availableForJan, 0);
+      janPlan = { janWd, janNatural, availableForJan, janShort, sufficient: janShort <= 0 };
+    }
+    poDecision = { natural, floor, suggested, ceiling, halfDay, oneDay, gap, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd, poDaily: poGroups.length ? poDaily : 0, attend: m.attendFactor != null ? m.attendFactor : 1, janPlan };
   }
 
   return {
@@ -1431,13 +1444,27 @@ function renderNow() {
       sub.textContent = '为 ' + d.nextM + ' 月 PO（' + d.wd + ' 个工作日）· 决策点 ' + c.curM + '月18-19日';
       const tier = (label, val, note, cls) =>
         '<div class="kpi" style="' + (cls || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + fmtCny(val) + '</div><div class="kpi-sub">' + note + '</div></div>';
-      box.innerHTML =
-        '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
-        tier('① 下限（请假多于加班）', d.floor, '团队需求 − ' + fmtCny(d.halfDay) + '（半天日额）', '') +
-        tier('② 建议下这个数 ★', d.suggested, '团队自然需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '×出勤' + d.attend + '）', 'border:2px solid var(--blue);background:var(--blue-bg)') +
-        tier(d.yearEnd ? '③ 上限（年底：严格按建议）' : '③ 上限（加班/加人时）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，不加缓冲' : '建议 + ' + fmtCny(d.oneDay) + '（1天日额，覆盖加班+新人）', 'border:1px solid var(--amber)') +
-        '</div>' +
-        (d.gap > 0 ? (() => {
+      // 年底双月决策视图
+      if (d.janPlan) {
+        const jp = d.janPlan;
+        box.innerHTML =
+          '<div class="muted" style="margin-bottom:8px"><b>年底双月决策</b>：12月PO冲今年目标 + 1月PO保团队不断档（下一年的预算一般年后才授予，1月只能用今年的剩余）</div>' +
+          '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
+          tier('① 12月PO·冲目标', d.suggested, '团队需求' + fmtCny(d.natural) + (d.gap > 0 ? ' + 缺口' + fmtCny(d.gap) : '') + '｜已下' + fmtCny(d.fcNext), 'border:2px solid var(--blue);background:var(--blue-bg)') +
+          tier('② 1月PO·保团队', jp.janNatural, jp.janWd + '个工作日 × 出勤' + d.attend + '｜下一年的PO', 'border:2px solid var(--teal);background:var(--teal-bg)') +
+          tier('③ 合计需求', d.suggested + jp.janNatural, '12月 + 1月', '') +
+          tier(jp.sufficient ? '④ 剩余额度 ✓够' : '④ 剩余额度 ⚠缺', d.itwRemainTotal, jp.sufficient ? '覆盖双月PO后还余 ' + fmtCny(jp.availableForJan - jp.janNatural) : '<b>缺口 ' + fmtCny(jp.janShort) + '</b>→1月PO只能下半月/调低目标', jp.sufficient ? '' : 'border:2px solid var(--red);color:var(--red)') +
+          '</div>' +
+          (jp.sufficient ? '' : '<div class="cons-diff warn" style="margin-top:6px">⚠ <b>1月PO缺口 ' + fmtCny(jp.janShort) + '</b>——你需要在以下选项中做取舍：<br>① 调低今年目标（如 80%→75%），留更多钱给1月<br>② 1月PO先下半个月，等下一年的钱来了再补<br>③ OD 侧挪额度（如果 OD 有富余）<br>④ 与 BA 协调，看能否提前授予下一年的部分预算</div>');
+      } else {
+        box.innerHTML =
+          '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
+          tier('① 下限（请假多于加班）', d.floor, '团队需求 − ' + fmtCny(d.halfDay) + '（半天日额）', '') +
+          tier('② 建议下这个数 ★', d.suggested, '团队自然需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '×出勤' + d.attend + '）', 'border:2px solid var(--blue);background:var(--blue-bg)') +
+          tier(d.yearEnd ? '③ 上限（年底：严格按建议）' : '③ 上限（加班/加人时）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，不加缓冲' : '建议 + ' + fmtCny(d.oneDay) + '（1天日额，覆盖加班+新人）', 'border:1px solid var(--amber)') +
+          '</div>';
+      }
+      box.innerHTML += (d.gap > 0 ? (() => {
           const monthsLeft = 13 - d.nextM;
           const odAvgRate = c.team && c.team.odGroups.length ? Math.round(c.team.theoryOd / Math.max(sum(c.team.odGroups, g => g.headcount), 1)) : 25000;
           const odNeed = Math.ceil(d.gap / (odAvgRate * Math.max(monthsLeft, 1)));
