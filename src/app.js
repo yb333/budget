@@ -934,21 +934,23 @@ function calc() {
     });
   }
 
-  // ===== 下PO决策引擎：三档金额 + 轮换制分配 =====
+  // ===== 下PO决策引擎：三档 = 自然需求 ± 合理波动（非达标缺口） =====
   let poDecision = null;
   if (poAdvice && started) {
     const itwRemainTotal = sum(codes, x => per[x].itwRemain);
-    // 保底 = 团队自然需求（理论/历史取大），确保执行率不掉
-    const base = Math.max(poAdvice.thNext, poAdvice.histNext);
-    // 达标缺口分摊（有缺口才加）
-    const gapShare = poAdvice.gap > 0 ? poAdvice.extra : 0;
-    // 建议值 = 保底 + 缺口
-    const suggested = Math.max(base + gapShare, poAdvice.fcNext);
-    // 上限 = 建议 + 缓冲（15%）；年底收紧不加缓冲（12月PO跨年=冻结）；受可支配约束
+    // 团队自然需求（理论/历史取大）
+    const natural = Math.max(poAdvice.thNext, poAdvice.histNext);
+    // 合理波动 = 团队日额的 0.5~1 天（覆盖：加班约+0.5天/月、请假≤加班量、人员进出走Excel反映）
+    const halfDay = Math.round(poGroups.length ? poDaily * 0.5 : 0);
+    const oneDay = poGroups.length ? poDaily : 0;
     const yearEnd = curM >= 11;
-    const buffer = yearEnd ? 0 : Math.min(Math.round(base * 0.15), 20000);
-    const ceiling = Math.min(suggested + buffer, itwRemainTotal + poAdvice.fcNext);
-    // 轮换制分配：按「剩余多 × 执行率落后」排序，优先用一个来源，用完轮换下一个
+    // 三档
+    const floor = Math.max(natural - halfDay, 0);       // 下限：请假多于加班
+    const suggested = natural;                            // 建议：正常月份
+    const ceiling = yearEnd ? natural : natural + oneDay; // 上限：加班/加人（年底不加，跨年=冻结）
+    // 达标缺口（单独提示，不灌进 PO 金额）
+    const gap = poAdvice.gap > 0 ? poAdvice.gap : 0;
+    // 轮换制分配：按「剩余 × 执行率落后」排序，优先用一个来源，用完轮换下一个
     const ranked = codes
       .filter(code => per[code].itwRemain > 100 && !(per[code].plan && per[code].plan.dead))
       .map(code => {
@@ -959,7 +961,6 @@ function calc() {
         return { code, name: (s.plan ? s.plan.name : s.name), remain: s.itwRemain, rate: rate, urgency: urgency, target: target, score: s.itwRemain * (0.3 + urgency * 2) };
       })
       .sort((x, y) => y.score - x.score);
-    // 依次分配
     let pool = suggested;
     const alloc = [];
     for (const r of ranked) {
@@ -968,11 +969,8 @@ function calc() {
       if (give > 100) alloc.push({ ...r, alloc: give, next: null });
       pool -= give;
     }
-    // 标注「下次轮换」
-    for (let i = 0; i < alloc.length; i++) {
-      alloc[i].next = i + 1 < alloc.length ? alloc[i + 1].name : null;
-    }
-    poDecision = { base, gapShare, suggested, ceiling, buffer, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd };
+    for (let i = 0; i < alloc.length; i++) alloc[i].next = i + 1 < alloc.length ? alloc[i + 1].name : null;
+    poDecision = { natural, floor, suggested, ceiling, halfDay, oneDay, gap, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd, poDaily: poGroups.length ? poDaily : 0, attend: m.attendFactor != null ? m.attendFactor : 1 };
   }
 
   return {
@@ -1147,10 +1145,11 @@ function renderNow() {
         '<div class="kpi" style="' + (cls || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + fmtCny(val) + '</div><div class="kpi-sub">' + note + '</div></div>';
       box.innerHTML =
         '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
-        tier('① 保底（不低于）', d.base, '团队需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '取大）' + (d.gapShare > 0 ? ' + 缺口' + fmtCny(d.gapShare) : ''), '') +
-        tier('② 建议下这个数', d.suggested, '保底' + (d.gapShare > 0 ? ' + 达标缺口' + fmtCny(d.gapShare) : '') + (d.fcNext > d.suggested ? ' ⚠已下PO预测更高' : ''), 'border:2px solid var(--blue);background:var(--blue-bg)') +
-        tier(d.yearEnd ? '③ 上限（年底不加缓冲）' : '③ 上限（别超太多）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，<b>严格按建议值</b>下' : '建议+15%缓冲；超太多→冻结多→催验收', 'border:1px solid var(--amber)') +
+        tier('① 下限（请假多于加班）', d.floor, '团队需求 − ' + fmtCny(d.halfDay) + '（半天日额）', '') +
+        tier('② 建议下这个数 ★', d.suggested, '团队自然需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '×出勤' + d.attend + '）', 'border:2px solid var(--blue);background:var(--blue-bg)') +
+        tier(d.yearEnd ? '③ 上限（年底：严格按建议）' : '③ 上限（加班/加人时）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，不加缓冲' : '建议 + ' + fmtCny(d.oneDay) + '（1天日额，覆盖加班+新人）', 'border:1px solid var(--amber)') +
         '</div>' +
+        (d.gap > 0 ? '<div class="cons-diff warn" style="margin-top:8px">📊 距目标缺口 ¥' + fmtCny(d.gap).replace('¥','') + '（不含在本 PO 金额中）——建议通过 <b>OD 补足</b>（额度够时即时扣减），或评估目标合理性/催 BA。</div>' : '') +
         '<div style="margin-top:12px"><b style="font-size:13px">分配方案（轮换制：优先用一个来源，用完轮换下一个）</b></div>' +
         '<table class="tbl"><thead><tr><th></th><th>预算来源</th><th class="num">本次分配</th><th class="num">IT外包剩余</th><th class="num">执行率(目标)</th><th>下次轮换</th></tr></thead><tbody>' +
         d.alloc.map((r, i) =>
@@ -1176,7 +1175,7 @@ function renderNow() {
     const alloc = c.odAdvice.alloc.slice(0, 3).map(x => x.name + ' +' + fmtCny(x.amt)).join(' / ');
     acts.push({ t: '<b>OD 调拨 ' + fmtCny(c.odAdvice.transfer) + '</b>（IT外包→OD，赶在月底扣减前）' + (alloc ? '，参考分配：' + alloc : '') });
   }
-  if (c.poDecision) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>建议 ' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(Math.max(c.poDecision.base, c.poDecision.fcNext)) + ' ~ ' + fmtCny(c.poDecision.ceiling) + '），分配见上方决策卡' });
+  if (c.poDecision) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>建议 ' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(c.poDecision.floor) + ' ~ ' + fmtCny(c.poDecision.ceiling) + '），分配见决策卡' + (c.poDecision.gap > 0 ? '；缺口 ' + fmtCny(c.poDecision.gap) + ' 建议靠 OD 补' : '') });
   c.grantWarn.filter(w => w.msg).slice(0, 2).forEach(w => acts.push({ t: '催 BA：<b>' + esc(w.name) + '</b> ' + esc(w.msg) }));
   if (c.openCnt > 0) acts.push({ t: '催验收：' + c.openCnt + ' 个 OPEN PO 在途冻结 ' + fmtCny(c.poFrozen) + '，预计返还 ' + fmtCny(c.poReturn) + '（验收周期约 1 个月）' });
   if (state.team.length) {
