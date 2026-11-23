@@ -151,6 +151,10 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div class="card-title">② 风险 <span class="card-sub">红=需尽快处理 · 黄=关注 · 灰=口径说明</span></div>
       <div id="nowRisk"></div>
     </div>
+    <div class="card" id="poDecisionCard" style="border-left:4px solid var(--blue)">
+      <div class="card-title">Ⓣ 下 PO 决策 <span class="card-sub" id="poDecisionSub"></span></div>
+      <div id="poDecisionBox"></div>
+    </div>
     <div class="card">
       <div class="card-title">③ 本周期行动清单 <span class="card-sub">按优先级排序 · 完成可勾选（当月有效）</span></div>
       <div id="nowActions"></div>
@@ -1185,8 +1189,49 @@ function calc() {
     });
   }
 
+  // ===== 下PO决策引擎：三档金额 + 轮换制分配 =====
+  let poDecision = null;
+  if (poAdvice && started) {
+    const itwRemainTotal = sum(codes, x => per[x].itwRemain);
+    // 保底 = 团队自然需求（理论/历史取大），确保执行率不掉
+    const base = Math.max(poAdvice.thNext, poAdvice.histNext);
+    // 达标缺口分摊（有缺口才加）
+    const gapShare = poAdvice.gap > 0 ? poAdvice.extra : 0;
+    // 建议值 = 保底 + 缺口
+    const suggested = Math.max(base + gapShare, poAdvice.fcNext);
+    // 上限 = 建议 + 缓冲（15%）；年底收紧不加缓冲（12月PO跨年=冻结）；受可支配约束
+    const yearEnd = curM >= 11;
+    const buffer = yearEnd ? 0 : Math.min(Math.round(base * 0.15), 20000);
+    const ceiling = Math.min(suggested + buffer, itwRemainTotal + poAdvice.fcNext);
+    // 轮换制分配：按「剩余多 × 执行率落后」排序，优先用一个来源，用完轮换下一个
+    const ranked = codes
+      .filter(code => per[code].itwRemain > 100 && !(per[code].plan && per[code].plan.dead))
+      .map(code => {
+        const s = per[code];
+        const rate = s.execRate || 0;
+        const target = s.target || m.execRateTarget;
+        const urgency = Math.max(target - rate, 0);
+        return { code, name: (s.plan ? s.plan.name : s.name), remain: s.itwRemain, rate: rate, urgency: urgency, target: target, score: s.itwRemain * (0.3 + urgency * 2) };
+      })
+      .sort((x, y) => y.score - x.score);
+    // 依次分配
+    let pool = suggested;
+    const alloc = [];
+    for (const r of ranked) {
+      if (pool <= 0) break;
+      const give = Math.min(r.remain, pool);
+      if (give > 100) alloc.push({ ...r, alloc: give, next: null });
+      pool -= give;
+    }
+    // 标注「下次轮换」
+    for (let i = 0; i < alloc.length; i++) {
+      alloc[i].next = i + 1 < alloc.length ? alloc[i + 1].name : null;
+    }
+    poDecision = { base, gapShare, suggested, ceiling, buffer, alloc, yearEnd, itwRemainTotal, fcNext: poAdvice.fcNext, nextM: poAdvice.nextM, wd: poAdvice.wd };
+  }
+
   return {
-    Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, itwExec, odExec, execTotal, execRate,
+    Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, poDecision, itwExec, odExec, execTotal, execRate,
     timeProg, curM, poMonthlyAct, poMonthlyFc, poActByCode, poFrozen, poReturn, openCnt,
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
     poAdvice, odAdvice, grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
@@ -1344,6 +1389,41 @@ function renderNow() {
     ? risks.map(([lv, tag, txt]) => '<div class="risk-item"><span class="risk-lv ' + lv + '">' + (lv === 'red' ? '!' : lv === 'amber' ? '·' : lv === 'info' ? 'i' : '✓') + '</span><div><b>' + tag + '</b>　' + txt + '</div></div>').join('')
     : '<div class="risk-item"><span class="risk-lv green">✓</span><div><b>暂无风险</b>　执行进度、数据一致性、授予进度均正常</div></div>';
 
+  /* ---- Ⓣ 下PO决策卡 ---- */
+  {
+    const d = c.poDecision;
+    const box = $('#poDecisionBox'), sub = $('#poDecisionSub');
+    if (!d) {
+      sub.textContent = '';
+      box.innerHTML = '<div class="empty">导入数据后展示建议</div>';
+    } else {
+      sub.textContent = '为 ' + d.nextM + ' 月 PO（' + d.wd + ' 个工作日）· 决策点 ' + c.curM + '月18-19日';
+      const tier = (label, val, note, cls) =>
+        '<div class="kpi" style="' + (cls || '') + '"><div class="kpi-label">' + label + '</div><div class="kpi-value">' + fmtCny(val) + '</div><div class="kpi-sub">' + note + '</div></div>';
+      box.innerHTML =
+        '<div class="kpi-grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">' +
+        tier('① 保底（不低于）', d.base, '团队需求（理论' + fmtCny(c.poAdvice.thNext) + '/历史' + fmtCny(c.poAdvice.histNext) + '取大）' + (d.gapShare > 0 ? ' + 缺口' + fmtCny(d.gapShare) : ''), '') +
+        tier('② 建议下这个数', d.suggested, '保底' + (d.gapShare > 0 ? ' + 达标缺口' + fmtCny(d.gapShare) : '') + (d.fcNext > d.suggested ? ' ⚠已下PO预测更高' : ''), 'border:2px solid var(--blue);background:var(--blue-bg)') +
+        tier(d.yearEnd ? '③ 上限（年底不加缓冲）' : '③ 上限（别超太多）', d.ceiling, d.yearEnd ? '12月PO跨年即冻结，<b>严格按建议值</b>下' : '建议+15%缓冲；超太多→冻结多→催验收', 'border:1px solid var(--amber)') +
+        '</div>' +
+        '<div style="margin-top:12px"><b style="font-size:13px">分配方案（轮换制：优先用一个来源，用完轮换下一个）</b></div>' +
+        '<table class="tbl"><thead><tr><th></th><th>预算来源</th><th class="num">本次分配</th><th class="num">IT外包剩余</th><th class="num">执行率(目标)</th><th>下次轮换</th></tr></thead><tbody>' +
+        d.alloc.map((r, i) =>
+          '<tr' + (i === 0 ? ' style="background:var(--blue-bg)"' : '') + '><td><span class="act-no">' + (i + 1) + '</span></td>' +
+          '<td><b>' + esc(r.name) + '</b> <span class="muted">[' + esc(r.code) + ']</span></td>' +
+          '<td class="num"><b style="color:var(--blue);font-size:15px">' + fmtCny(r.alloc) + '</b></td>' +
+          '<td class="num">' + fmtCny(r.remain) + '</td>' +
+          '<td class="num">' + fmtPct(r.rate) + ' <span class="muted">(' + fmtPct(r.target) + ')</span>' + (r.urgency > 0.15 ? ' <span style="color:var(--red)">⚠落后</span>' : '') + '</td>' +
+          '<td>' + (r.next ? '→ ' + esc(r.next) : '—') + '</td></tr>'
+        ).join('') + '</tbody></table>' +
+        '<div class="muted" style="margin-top:6px">' +
+        '排序逻辑：剩余额度 × 执行率落后程度——<b>钱多且落后</b>的先用，用完自然轮到下一个，不用每次都分好几个来源。' +
+        (d.yearEnd ? ' <b style="color:var(--red)">⚠ 年底提醒：12月 PO 尽量当月执行完，多余的冻结跨年。</b>' : '') +
+        (d.itwRemainTotal < d.suggested ? ' <b style="color:var(--amber)">⚠ IT外包剩余 ' + fmtCny(d.itwRemainTotal) + ' 低于建议额，先催验收释放冻结。</b>' : '') +
+        '</div>';
+    }
+  }
+
   /* ---- ③ 行动清单 ---- */
   const acts = [];
   if (c.unmatched.length) acts.push({ t: '关联 ' + c.unmatched.length + ' 个新预算来源编码（' + c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '），否则执行率分母不准', btn: 'link:manage', btnTxt: '去关联' });
@@ -1351,10 +1431,7 @@ function renderNow() {
     const alloc = c.odAdvice.alloc.slice(0, 3).map(x => x.name + ' +' + fmtCny(x.amt)).join(' / ');
     acts.push({ t: '<b>OD 调拨 ' + fmtCny(c.odAdvice.transfer) + '</b>（IT外包→OD，赶在月底扣减前）' + (alloc ? '，参考分配：' + alloc : '') });
   }
-  if (c.poAdvice && c.poAdvice.newIssue > 0) {
-    const a = c.poAdvice;
-    acts.push({ t: '<b>20 号前下 ' + a.nextM + ' 月 PO：新下 ' + fmtCny(a.newIssue) + '</b>（已下 ' + fmtCny(a.fcNext) + '，团队需求 ' + fmtCny(a.natural) + (a.extra > 0 ? '，达标追加 ' + fmtCny(a.extra) : '') + '，' + a.wd + ' 个工作日）' + (a.late ? '——已近年底，追加部分评估跨年' : '') });
-  } else if (c.poAdvice) acts.push({ t: '下月 PO：已下 ' + fmtCny(c.poAdvice.fcNext) + ' 已覆盖团队需求 ' + fmtCny(c.poAdvice.natural) + '，无需追加' });
+  if (c.poDecision) acts.push({ t: '20 号前下 ' + c.poDecision.nextM + ' 月 PO：<b>建议 ' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(Math.max(c.poDecision.base, c.poDecision.fcNext)) + ' ~ ' + fmtCny(c.poDecision.ceiling) + '），分配见上方决策卡' });
   c.grantWarn.filter(w => w.msg).slice(0, 2).forEach(w => acts.push({ t: '催 BA：<b>' + esc(w.name) + '</b> ' + esc(w.msg) }));
   if (c.openCnt > 0) acts.push({ t: '催验收：' + c.openCnt + ' 个 OPEN PO 在途冻结 ' + fmtCny(c.poFrozen) + '，预计返还 ' + fmtCny(c.poReturn) + '（验收周期约 1 个月）' });
   if (state.team.length) {
@@ -1539,19 +1616,10 @@ function renderPO() {
     '<tr><td>预计返还（OPEN PO 超出所属月的预测）</td><td>' + fmtCny(c.poReturn) + '</td></tr>' +
     '</table><div class="muted" style="margin-top:6px">PO 按自然月下达：<b>所属月内的预测</b>=即将执行不算返还；<b>超出所属月</b>的预测=没花掉，验收后返还。挂靠 PO 不计入以上口径。</div>';
 
-  $('#poAdviceSub').textContent = c.poAdvice ? ('决策点 ' + c.curM + '月18-19日 → 20日下 ' + c.poAdvice.nextM + '月 PO · ' + c.poAdvice.wd + ' 个工作日') : '';
-  let adv = '<div class="empty">—</div>';
-  if (c.poAdvice) {
-    const a = c.poAdvice;
-    adv = '<table class="cons-table">' +
-      '<tr><td>已下 PO 在 ' + a.nextM + '月的平台预测</td><td>' + fmtCny(a.fcNext) + '</td></tr>' +
-      '<tr><td>团队自然需求（理论 ' + fmtCny(a.thNext) + ' / 历史修正 ' + fmtCny(a.histNext) + '，取大）</td><td>' + fmtCny(a.natural) + '</td></tr>' +
-      (a.extra > 0 ? '<tr><td>达标追加（缺口 ' + fmtCny(a.gap) + ' ÷ 剩余月）</td><td>' + fmtCny(a.extra) + '</td></tr>' : '') +
-      '<tr><td><b>建议新下 PO</b></td><td><b>' + fmtCny(a.newIssue) + '</b></td></tr>' +
-      '<tr><td>同期 OD 预计扣减</td><td>' + fmtCny(a.odEstNext) + '</td></tr>' +
-      '</table>' + (a.late ? '<div class="cons-diff info">ℹ️ 已近年底，追加部分请评估能否年内执行完，否则跨年安排。</div>' : '');
-  }
-  $('#poAdviceWrap').innerHTML = adv;
+  $('#poAdviceSub').textContent = '';
+  $('#poAdviceWrap').innerHTML = c.poDecision
+    ? '<div class="cons-diff info" style="margin:0">💡 完整决策（三档金额+分配方案）在首页「Ⓣ 下 PO 决策」卡。建议 <b>' + fmtCny(c.poDecision.suggested) + '</b>（区间 ' + fmtCny(c.poDecision.base) + '~' + fmtCny(c.poDecision.ceiling) + '）。</div>'
+    : '<div class="empty">—</div>';
 }
 
 
