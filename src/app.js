@@ -904,6 +904,10 @@ function calc() {
     });
   }
 
+  // 授予进度（催 BA）
+  const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
+  const grantWarn = [];
+
   // OD 额度不足预警（执行>可用 或 可用=0但有执行 → 说明调拨不够）
   codes.forEach(code => {
     const s = per[code];
@@ -911,10 +915,6 @@ function calc() {
       grantWarn.push({ name: (s.plan ? s.plan.name : s.name) + ' OD', msg: 'OD 已执行 ' + fmtCny(s.odExec) + ' > 可用 ' + fmtCny(s.odAvail) + '——调拨不足，请增加 OD 额度' });
     }
   });
-
-  // 授予进度（催 BA）
-  const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
-  const grantWarn = [];
   plansY.forEach(p => {
     if (p.dead) return;   // 失效（预算下不来）：不再催BA
     if (!p.code || !per[p.code]) {
@@ -2109,11 +2109,13 @@ function renderAll() {
   renderData();
 }
 (async () => {
-  if (location.protocol === 'http:' || location.protocol === 'https:') {
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '[::1]';
+  if ((location.protocol === 'http:' || location.protocol === 'https:') && !isLocal) {   // 仅局域网访问者进分享模式；本机维护端始终编辑模式
     try {
       const r = await fetch('data.json', { cache: 'no-store' });
       if (r.ok) {
         const d = await r.json();
+        if (d && d.budgetBudgetShare && d.state) { SHARE_MODE = true; SHARE_PKG = d; document.body.classList.add('share'); }
         if (d && d.budgetDashShare && d.state) { SHARE_MODE = true; SHARE_PKG = d; document.body.classList.add('share'); }
       }
     } catch (e) { }
