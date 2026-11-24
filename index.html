@@ -161,6 +161,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
     <div id="importChanges"></div>
+    <div id="newYearBox"></div>
     <div class="card">
       <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划 × 汇率 · 考核线 = 各来源自己的目标 · 总体目标 = 按规划加权</span></div>
       <div id="nowProgress"></div>
@@ -1781,6 +1782,9 @@ function calc() {
   const odEst = {}, poEst = {};
   if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = hasOdCfg ? odDeduct(mo) : odBase * odMult(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
   const odFuture = sum(Object.entries(odEst), ([mo, v]) => +mo >= curM ? v : 0);
+  // 全年逐月的团队消耗（给"新年测算"用：不管现在是几月都按整年算；人数含变动计划，不含校准系数）
+  const yearCost = { po: [], od: [] };
+  for (let mo = 1; mo <= 12; mo++) { yearCost.po.push(hasPoCfg ? theoryPo(mo) : 0); yearCost.od.push(hasOdCfg ? odDeduct(mo) : 0); }
   const poFuture = sum(Object.values(poEst));
 
   /* ================= 年底推演：每个来源从现在推到 12/31，本月的指令是推演的第一步 =================
@@ -2277,7 +2281,7 @@ function calc() {
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
     grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode, poExclWill, poExclFrozen, poExclAgg, poExclWillM,
-    workdays, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
+    workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
       hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) + sum(tempAt('od', yy, mo), v => v.headcount) }) },
     poAvg, poAvgWd,
     projects, hasProj, byPo, poParsedOld, wallets, odRemainTotal, odOverList, specialRows,
@@ -2390,6 +2394,7 @@ function renderNow() {
     (c.snap ? '<span style="opacity:.8;font-size:12px">　数据截至 ' + c.snap.date + '</span>' : '');
 
   /* ---- 本次导入发现了什么（自动和上一次导入比，不用点任何东西；明细默认折叠） ---- */
+  { const nyb = $('#newYearBox'); if (nyb) nyb.innerHTML = ''; }
   {
     const ic = $('#importChanges');
     if (ic) {
@@ -2440,6 +2445,50 @@ function renderNow() {
     }).join('') +
     (d && d.rows.length > 8 ? '<div class="muted" style="padding:4px 0">…共 ' + d.rows.length + ' 个来源，完整推演见下方决策卡</div>' : '') + '</div>' +
     '<div class="muted" style="margin-top:4px">ℹ️ ' + esc(c.odAsOfText || '') + (d ? '　执行率的考核线是各来源自己的目标；总体目标 = 各来源目标按规划金额加权。' : '') + '</div>';
+
+  /* ---- 新年测算：本年度有规划、还没有平台数据时，按规划、各来源目标和现在的团队估一遍 ----
+     结论先行（团队够不够人、能留多少给后年 1 月），逐月消耗折叠；预算几月到账算不准，不画资金曲线，等有了实际到账再看 */
+  if (c.plansY.length && !c.snap) {
+    const fx = m.fxRate, TP = c.yearCost || { po: [], od: [] };
+    const tgt = p => (p.target != null ? p.target : m.execRateTarget);
+    const live = c.plansY.filter(p => !p.dead && wusdOf(p) > 0);
+    const cny = p => wusdOf(p) * 10000 * fx;
+    const A = sum(live, cny), B = sum(live, p => cny(p) * tgt(p)), C = Math.max(0, A - B);   // 规划合计 / 按目标要花掉 / 达标后最多能留
+    const assessedCny = sum(live.filter(p => tgt(p) > 0), cny);
+    const D = sum(TP.po), E = sum(TP.od), F = D + E, G = B - F;   // PO、OD 全年消耗；G = 目标额度内的余量
+    const team = (state.team || []).filter(g => (g.headcount || 0) > 0);
+    const hcPo = sum(team.filter(g => g.kind === 'po'), g => g.headcount), hcOd = sum(team.filter(g => g.kind === 'od'), g => g.headcount);
+    const perPo = hcPo > 0 ? D / hcPo : 0, perOd = hcOd > 0 ? E / hcOd : 0;
+    const janNeed = TP.po[0] || 0, janGap = Math.max(0, janNeed - C), cutPts = assessedCny > 0 ? janGap / assessedCny * 100 : 0;
+    let carry = '';
+    try {   // 去年那边预计留多少 1 月 PO（去年视图的年底资金安排）；calc 不改状态，临时切过去算一下再切回来
+      const y0 = state.meta.year; state.meta.year = y0 - 1;
+      try { const pd = calc().poDecision; if (pd && pd.jan) carry = '去年那边：预计留 1 月 PO <b>' + fmtCny(pd.jan.reserve) + '</b>，首次导入后计入今年的可用、不占今年的规划。'; }
+      finally { state.meta.year = y0; }
+    } catch (e) { }
+    const cutTxt = (gap, pp, np, po, no) => {   // 超支 gap 时：减哪边的人；要减的超过现有人数就直说"全减也不够"
+      const rp = pp > 0 ? Math.ceil(gap / pp) : Infinity, ro = po > 0 ? Math.ceil(gap / po) : Infinity;
+      if (rp > np && ro > no) return '两边的人全减也不够，必须追加预算';
+      return [rp <= np ? 'PO 团队要减 <b>' + rp + '</b> 人' : 'PO 团队全减也不够', ro <= no ? 'OD 团队要减 <b>' + ro + '</b> 人' : 'OD 团队全减也不够'].join('，或 ');
+    };
+    const concl = !team.length ? '还没有团队配置：录入团队 Excel（放进数据集）后，这里会算出全年够养多少人。'
+      : G >= 0 ? '结论：按目标要花掉 ' + fmtCny(B) + '，PO ＋ OD 全年 ' + fmtCny(F) + '，还余 <b>' + fmtCny(G) + '</b>——够 PO 再加 <b>' + (perPo ? Math.floor(G / perPo) : 0) + '</b> 人，或 OD 再加 <b>' + (perOd ? Math.floor(G / perOd) : 0) + '</b> 人（二选一）。'
+      : '结论：按现在的团队全年要花 ' + fmtCny(F) + '，超过按目标的额度 <b style="color:var(--red)">' + fmtCny(-G) + '</b>' + (F > A ? '，已经超过规划合计 ' + fmtCny(A) : '') + '——' + cutTxt(-G, perPo, hcPo, perOd, hcOd) + '；或者调低目标（每降 1 个百分点约 ' + fmtCny(assessedCny / 100) + '）。';
+    let cum = 0;
+    const ny = $('#newYearBox');
+    if (ny) ny.innerHTML = '<div class="card" style="border-left:4px solid var(--blue)"><div class="card-title">新年测算<span class="card-sub">' + Y + ' 年度还没有平台数据 · 按规划、各来源目标和现在的团队（含变动计划）估算</span></div>' +
+      '<div class="kpi-grid" style="margin-top:6px">' +
+      kpi('规划合计', fmtCny(A), '按各来源目标要花掉 <b>' + fmtCny(B) + '</b>；达标后最多能留 <b>' + fmtCny(C) + '</b> 给后年 1 月') +
+      kpi('PO 团队', hcPo + ' 人', team.length ? '全年 <b>' + fmtCny(D) + '</b>' + (perPo ? '，人均 ' + fmtCny(perPo) + '/年' : '') : '还没有团队配置') +
+      kpi('OD 团队', hcOd + ' 人', team.length ? '全年 <b>' + fmtCny(E) + '</b>（含年终奖）' + (perOd ? '，人均 ' + fmtCny(perOd) + '/年' : '') : '') +
+      kpi('留给后年 1 月', fmtCny(C), '团队 1 月需要 <b>' + fmtCny(janNeed) + '</b>（1 月没有 OD 扣减）' + (janGap > 500 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janGap) + '</b>：要留够，各考核来源的目标合计还要再降约 ' + cutPts.toFixed(1) + ' 个百分点' : '，✓ 够'), janGap > 500 ? 'c-amber' : 'c-green') +
+      '</div>' +
+      '<div class="ins-sub">' + concl + '</div>' +
+      (carry ? '<div class="ins-sub muted">' + carry + '</div>' : '') +
+      (team.length ? '<details class="fold"><summary>逐月团队消耗（不含预算到账节奏）</summary><table class="tbl"><thead><tr><th>月</th><th class="num">工作日</th><th class="num">PO 团队</th><th class="num">OD 扣减</th><th class="num">累计</th></tr></thead><tbody>' +
+        TP.po.map((v, i) => { cum += v + (TP.od[i] || 0); return '<tr><td>' + (i + 1) + ' 月</td><td class="num">' + c.workdays(i + 1) + '</td><td class="num">' + fmtCny(v) + '</td><td class="num">' + (TP.od[i] ? fmtCny(TP.od[i]) : '<span class="muted">—</span>') + '</td><td class="num">' + fmtCny(cum) + '</td></tr>'; }).join('') + '</tbody></table></details>' : '') +
+      '<div class="muted" style="margin-top:6px">人数要调就写进变动计划或团队 Excel，这里跟着变。预算几月到账现在算不准，所以不画资金曲线；1 月的 PO 用去年的结余下，到看 2 月的 PO 时如果预算还没到账，看板会提醒。</div></div>';
+  }
 
   /* ---- ② 风险 ---- */
   const risks = [];
@@ -2666,6 +2715,7 @@ function renderNow() {
       const ws = YP.wallets.filter(w => w.now + w.refundPast + w.refundCur + w.po + w.odCur + w.odDec + w.temp + w.jan > 0.5).sort((a, b) => (b.now + b.refundPast + b.refundCur) - (a.now + a.refundPast + a.refundCur));
       const n0 = v => v > 0.5 ? fmtCny(v) : '<span class="muted">—</span>';
       html += '<div class="ye"><div class="ye-title">年底资金安排<span class="muted">（从现在排到明年 1 月；按钱的优先级排，排在前面的先拿到钱）</span></div>' +
+        (c.curM >= 11 ? '<div class="ins-sub muted">明年的规划下来后：用顶栏切到明年 → 开启新年（复制今年的规划和参数，再改金额）→ 明年首页有「新年测算」（团队人数够不够、能留多少给后年 1 月）。1 月的 PO 按今年的结余下；到看 2 月的 PO 时，明年的预算还没到账看板会提醒。</div>' : '') +
         '<div class="kpi-grid" style="margin-top:6px">' +
         tile('达标来源', d.hitFinal + ' / ' + d.assessed, miss.length ? '未达标：' + miss.slice(0, 3).map(r => esc(r.name) + ' 差 ' + fmtCny(r.shortFinal)).join('、') + (miss.length > 3 ? '…' : '') + (covered ? '；另 ' + covered + ' 个要靠尚未约定的临时 OD 补上' : '') : '全部达标 ✓' + (covered ? '（其中 ' + covered + ' 个要靠尚未约定的临时 OD 补上）' : ''), miss.length ? 'c-amber' : 'c-green') +
         tile('预计总体执行率', fmtPct(c.forecastRate), '加权目标 ' + fmtPct(d.weightedTarget) + (d.temp.total > 0 ? ' · 补临时OD后 ' + fmtPct(c.planCnyTotal > 0 ? d.withTemp / c.planCnyTotal : null) : ''), d.hitFinal >= d.assessed ? 'c-green' : (d.hit >= d.assessed ? 'c-amber' : 'c-red')) +
