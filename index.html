@@ -3802,7 +3802,8 @@ async function handleAction(action, el, e) {
     if (!(fq >= 1 && fq <= 60)) { alert('更新频率应在 1~60 天'); return; }
     if (!Number.isFinite(at) || at < 0.5 || at > 1.5) { alert('出勤系数应在 0.5~1.5'); return; }
     const yp = yearParams(curYear());
-    state.years[curYear()] = { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' };
+    // 在原有年度参数上改这几项：剔除名单、OD 锚定项目等其他设置要留着
+    state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' });
     state.meta.updateFreqDays = fq;
     save(); alert('参数已保存（' + curYear() + ' 年度）'); return;
   }
@@ -3817,6 +3818,7 @@ async function handleAction(action, el, e) {
     plansOf(from).forEach(p => state.plans.push({ id: uid(), year: Y, code: p.code || '', name: p.name, amountW: wusdOf(p), target: p.target != null ? p.target : null, planProject: p.planProject || '', dead: false, note: '复制自' + from }));
     const ypFrom = yearParams(from);
     delete ypFrom.excluded;   // 预算来源的剔除按年独立：新年不沿用上年的剔除（来源可能不一样）
+    ypFrom.workdays = {};     // 每月工作日的手工覆盖是上一年放假安排的微调，不带到新年（新年用官方放假表 / 自动值，不对再调）
     // PO 级的剔除（按 PO 编号）带进新年：跨年的长 PO 明年还会出现在明细里，应该继续不参与决策；对新年没有的 PO 编号不起作用
     state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '' });
     touch('plan'); save();
