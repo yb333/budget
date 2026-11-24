@@ -1355,6 +1355,13 @@ function calc() {
   const odBase = hasOdCfg ? theoryOd : odAvg;
   const odMult = mo => mo === 1 ? 0 : mo === 6 ? 2 : mo === 12 ? (m.bonusMonths || 3.5) : 1;
   const odDeduct = mo => mo === 1 ? 0 : mo === 6 ? odCostAt(Y, 5) + odCostAt(Y, 6) : mo === 12 ? odCostAt(Y, 11) + odCostAt(Y, 12) + Math.max(0, (m.bonusMonths || 3.5) - 2) * odCostAt(Y, 12) : odCostAt(Y, mo - 1);
+  // 这次扣减里"已约定的临时 OD"占多少：变动计划里带结束年月的 OD 人员。临时 OD 是前面月份看到总体执行率不够、
+  // 找别的团队挂 OD 谈好的——说好了就是必须扣的，和常规 OD 一样是硬性支出（不是年底"有钱再补"的可选项）
+  const odTempCost = (yy, mo) => sum(tempAt('od', yy, mo), v => v.headcount * v.rate);
+  const odTempIn = {
+    cost: mo => mo === 12 ? odTempCost(Y, 11) + odTempCost(Y, 12) * (1 + Math.max(0, (m.bonusMonths || 3.5) - 2)) : odTempCost(Y, mo - 1),
+    hc: mo => mo === 12 ? sum(tempAt('od', Y, 12), v => v.headcount) : sum(tempAt('od', Y, mo - 1), v => v.headcount)
+  };
   const odEst = {}, poEst = {};
   if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = hasOdCfg ? odDeduct(mo) : odBase * odMult(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
   const odFuture = sum(Object.entries(odEst), ([mo, v]) => +mo >= curM ? v : 0);
@@ -1417,6 +1424,18 @@ function calc() {
   const reserveLeft = Object.assign({}, reserve);   // OD 调拨发生时相应扣减
   const refundUsed = {};   // 往月 PO 的返还额中已经被用掉的部分（钱包 key），避免同一笔返还被用两次
   const refundAvail = key => Math.max(0, (refundPastW[key] || 0) - (refundUsed[key] || 0));
+  const refundCurUsed = {};   // 11 月这张 PO 多下的部分中已被用掉的（钱包 key）
+  // 验收返还能不能用，看它什么时候到账、要花的钱什么时候花。花钱的先后是"PO 先、OD 后"（OD 月底才扣）：
+  //   往月 PO 的返还 12 月 15 日前到账；11 月这张 PO 多下的部分 12 月下旬到账。
+  //   两笔都赶得上 12 月 31 日的年终清算（含临时 OD），也算赶得上 12 月下旬下的 1 月 PO（卡片上标明要等验收）；
+  //   11 月底那笔扣减两笔都赶不上，只能用现有的 OD 额度和 IT外包。
+  const refundCurAvail = key => curM === 11 ? Math.max(0, (refundCurW[key] || 0) - (refundCurUsed[key] || 0)) : 0;
+  const refundAllAvail = key => refundAvail(key) + refundCurAvail(key);
+  const useRefundKey = (key, amt) => {   // 先用往月 PO 的返还，再用 11 月 PO 的
+    const g1 = Math.min(refundAvail(key), amt);
+    if (g1 > 0) refundUsed[key] = (refundUsed[key] || 0) + g1;
+    if (amt - g1 > 0) refundCurUsed[key] = (refundCurUsed[key] || 0) + (amt - g1);
+  };
   // 从某来源取钱给 PO：优先一个钱包取够；非锚定项目的钱包先用；IT外包剩余先用，不够再用 OD 额度（需先调回）
   const itwAvail = (r, w) => Math.max(0, w.itw - (r.usedItw[w.proj] || 0));
   const odAvailOf = (r, w) => Math.max(0, w.od - (r.usedOd[w.proj] || 0));
@@ -1474,10 +1493,10 @@ function calc() {
     });
     const others = () => projList.forEach(pk => { if (pk !== anchor && left > 0.5) { useQuota(pk); if (left > 0.5) pass(pk, true); if (left > 0.5) pass(pk, false); } });
     pass(anchor, true); if (left > 0.5) pass(anchor, false);
-    if (left > 0.5 && mo >= 11) srcRows.slice().sort((a, b) => refundAvail(b.code + '|' + anchor) - refundAvail(a.code + '|' + anchor)).forEach(r => {   // 验收返还
-      const key = r.code + '|' + anchor, cap = refundAvail(key);
+    if (left > 0.5 && mo === 12) srcRows.slice().sort((a, b) => refundAllAvail(b.code + '|' + anchor) - refundAllAvail(a.code + '|' + anchor)).forEach(r => {   // 验收返还：只有 12 月 31 日的年终清算赶得上（11 月底那笔扣减等不到）
+      const key = r.code + '|' + anchor, cap = refundAllAvail(key);
       if (left <= 0.5 || cap <= 0.5) return;
-      const g = Math.min(cap, left); left -= g; refundUsed[key] = (refundUsed[key] || 0) + g;
+      const g = Math.min(cap, left); left -= g; useRefundKey(key, g);
       res.refund.push({ code: r.code, name: r.decName, proj: anchor, amt: g });
     });
     if (left > 0.5) others();   // 锚定项目里实在不够了：才动别的项目（那就得分两个项目扣；先用那边已有的 OD 额度，再调拨）
@@ -1533,35 +1552,37 @@ function calc() {
       mo, need: odEst[mo], anchor: plan.anchor,
       usedAnchor: inA('used', x => x.amt), xferAnchor: inA('xfer', x => x.amt), refund: sum(plan.refund, x => x.amt),
       xferWallets: plan.xfer.filter(x => x.proj === plan.anchor),
-      other: plan.other, left: plan.left
+      other: plan.other, left: plan.left,
+      temp: hasOdCfg ? odTempIn.cost(mo) : 0, tempHc: hasOdCfg ? odTempIn.hc(mo) : 0   // 其中已约定的临时 OD（金额、12 月的在岗人数）
     });
   };
   if (started) for (let mo = curM; mo <= 12; mo++) { if (mo < 12) allocPoMonth(mo + 1, mo === curM ? nextDetail : null); allocOdMonth(mo); }
   const odWinEnd = winEndOf(Math.max(curM, 1));
   const odWinNeed = started ? sum(Object.entries(odEst), ([mo, v]) => +mo <= odWinEnd ? v : 0) : 0;
-  // 年底专用：往月未关闭 PO 的返还额（12 月 15 日前验收后才回到钱包）——可用于年底的临时 OD、1 月 PO，以及 12 月 OD 清算的调拨；不用于本月的 PO
-  const refundPastC = r => sum(r.wallets, w => refundAvail(r.code + '|' + w.proj));   // 没被用掉的返还额
-  const useRefund = (r, amt) => {   // 从该来源各钱包的可用返还额里扣
+  // 年底专用：还能用的验收返还额（往月 PO 的 12 月 15 日前到账 ＋ 11 月 PO 多下的部分 12 月下旬到账）——
+  // 用于 12 月 31 日的年终清算（含临时 OD）、尚未约定的临时 OD 补缺口、1 月 PO；不用于本月的 PO，也不用于 11 月底那笔扣减
+  const refundPastC = r => sum(r.wallets, w => refundAllAvail(r.code + '|' + w.proj));   // 没被用掉的返还额
+  const useRefund = (r, amt) => {   // 从该来源各钱包的可用返还额里扣（先用往月 PO 的）
     let left = amt;
-    r.wallets.forEach(w => { if (left <= 0) return; const key = r.code + '|' + w.proj, g = Math.min(refundAvail(key), left); if (g > 0) { refundUsed[key] = (refundUsed[key] || 0) + g; left -= g; } });
+    r.wallets.forEach(w => { if (left <= 0) return; const key = r.code + '|' + w.proj, g = Math.min(refundAllAvail(key), left); if (g > 0) { useRefundKey(key, g); left -= g; } });
   };
   const tempList = [];
   let tempFromRefund = 0;
   if (curM >= 11) srcRows.filter(r => r.gapLeft > 0 && r.funds - r.used + refundPastC(r) > 0).sort((a, b) => b.gapLeft - a.gapLeft).forEach(r => {   // ③ 临时 OD 补缺口
+    // 这里是"尚未约定"的那部分：按已约定的安排（变动计划里的临时 OD 人员已算进常规 OD 扣减）之后还剩的缺口，若要补达标需要再挂多少临时 OD
     const want = Math.min(r.gapLeft, r.funds - r.used + refundPastC(r));
     const det = { projs: new Set(), items: [] };
     const got = take(r, Math.min(want, Math.max(0, r.funds - r.used)), det, null);     // 先用现在就能花的钱
     const fromRef = Math.min(want - got, refundPastC(r));                        // 不够的部分靠验收返还
     const refW = []; let lf = fromRef;                                            // 用了哪些钱包的验收返还（年底资金安排里按钱包列出）
-    r.wallets.forEach(w => { if (lf <= 0) return; const g = Math.min(refundAvail(r.code + '|' + w.proj), lf); if (g > 0) { refW.push({ proj: w.proj, amt: g }); lf -= g; } });
+    r.wallets.forEach(w => { if (lf <= 0) return; const g = Math.min(refundAllAvail(r.code + '|' + w.proj), lf); if (g > 0) { refW.push({ proj: w.proj, amt: g }); lf -= g; } });
     useRefund(r, fromRef);
     r.temp += got + fromRef; r.gapLeft -= got + fromRef; tempFromRefund += fromRef;
     tempList.push({ code: r.code, name: r.decName, amt: got + fromRef, fromRef, items: det.items, refW });
   });
   const janItems = [];
   let janReserve = 0, janFromRefund = 0, janOdBack = 0, janFromCur = 0;
-  const refundCurUsed = {};
-  if (curM >= 11) {   // ④ 1 月 PO：用达标后的结余（只认 IT外包剩余，OD 额度要先调回）；不够再用往月 PO 的验收返还
+  if (curM >= 11) {   // ④ 1 月 PO：用达标后的结余（只认 IT外包剩余，OD 额度要先调回）；不够再用验收返还
     let left = needJan;
     srcRows.slice().sort((a, b) => sum(b.wallets, w => Math.max(0, w.itw - (b.usedItw[w.proj] || 0))) - sum(a.wallets, w => Math.max(0, w.itw - (a.usedItw[w.proj] || 0)))).forEach(r => r.wallets.forEach(w => {
       if (left <= 0) return;
@@ -1577,22 +1598,15 @@ function calc() {
         r.usedOd[w.proj] = (r.usedOd[w.proj] || 0) + g; r.used += g; left -= g; janOdBack += g; r.jan += g;
         janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, odBack: g });
       }));
-      srcRows.forEach(r => r.wallets.forEach(w => {   // 仍然不够：用往月 PO 验收后返还的钱
-      if (left <= 0) return;
-      const g = Math.min(left, refundAvail(r.code + '|' + w.proj));
-      if (g <= 0) return;
-      refundUsed[r.code + '|' + w.proj] = (refundUsed[r.code + '|' + w.proj] || 0) + g;
-      left -= g; janFromRefund += g; r.jan += g;
-      janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, fromRef: true });
-    }));
-    srcRows.forEach(r => r.wallets.forEach(w => {   // 最后：11 月那张 PO 多下的部分，12 月下旬验收后返还——赶得上下 1 月的 PO（只用于 1 月 PO，不用于年底的 OD 和临时 OD）
-      if (left <= 0) return;
-      const key = r.code + '|' + w.proj, g = Math.min(left, Math.max(0, (refundCurW[key] || 0) - (refundCurUsed[key] || 0)));
-      if (g <= 0) return;
-      refundCurUsed[key] = (refundCurUsed[key] || 0) + g;
-      left -= g; janFromCur += g; r.jan += g;
-      janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, fromCur: true });
-    }));
+      srcRows.forEach(r => r.wallets.forEach(w => {   // 仍然不够：用验收返还的钱（先用往月 PO 的，再用 11 月 PO 多下的部分）
+        if (left <= 0) return;
+        const key = r.code + '|' + w.proj, g = Math.min(left, refundAllAvail(key));
+        if (g <= 0) return;
+        const g1 = Math.min(refundAvail(key), g);
+        useRefundKey(key, g);
+        left -= g; janFromRefund += g1; janFromCur += g - g1; r.jan += g;
+        janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, fromRef: g1 > 0.5, fromCur: g - g1 > 0.5 });
+      }));
     janReserve = needJan - left;
   }
   srcRows.forEach(r => {
@@ -1986,7 +2000,7 @@ function renderNow() {
   if (d && d.fund.short > 0) risks.push(['red', '团队资金不足', '剩余团队 PO ' + fmtCny(d.fund.poNeed) + ' + 常规 OD 扣减 ' + fmtCny(d.fund.odNeed) + ' > 可支配 ' + fmtCny(d.fund.total) + '，缺 <b>' + fmtCny(d.fund.short) + '</b>' + (d.fund.month ? '，钱在 <b>' + d.fund.month + '</b>耗尽' : '') + '——催 BA 尽快到账']);
   if (c.odOverList.length) risks.push(['red', 'OD 额度已不足', c.odOverList.map(code => esc(c.per[code].name) + ' OD 已执行 ' + fmtCny(c.per[code].odExec) + ' > 可用 ' + fmtCny(c.per[code].odAvail)).join('；') + '——立即调拨，否则会落到「费用先结算至PO受益部门」']);
   if (d && d.assessed > 0 && (d.hit < d.assessed || (c.forecastRate != null && c.weightedTarget != null && c.forecastRate < c.weightedTarget)))
-    risks.push(['red', '达标风险', '按当前推演 ' + (d.assessed - d.hitFinal > 0 ? '<b>' + (d.assessed - d.hitFinal) + '</b> 个考核来源不达标' : '<b>达标要靠年底临时 OD</b>') + (c.weightedTarget != null ? '（预计总体 ' + fmtPct(c.forecastRate) + ' vs 加权目标 ' + fmtPct(c.weightedTarget) + '）' : '') + (d.temp.total > 0 ? '；其中 <b>' + fmtCny(d.temp.total) + '</b> 要靠年底临时 OD 补上' : '') + '，见决策卡']);
+    risks.push(['red', '达标风险', '按当前推演 ' + (d.assessed - d.hitFinal > 0 ? '<b>' + (d.assessed - d.hitFinal) + '</b> 个考核来源不达标' : '<b>要靠尚未约定的临时 OD 才能达标</b>') + (c.weightedTarget != null ? '（预计总体 ' + fmtPct(c.forecastRate) + ' vs 加权目标 ' + fmtPct(c.weightedTarget) + '）' : '') + (d.temp.total > 0 ? '；其中 <b>' + fmtCny(d.temp.total) + '</b> 要靠临时 OD 补上（尚未约定的要提前谈好、写进变动计划）' : '') + '，见决策卡']);
   if (c.checks.length)
     risks.push(['red', '两表不符', 'PO明细汇总与执行表有 ' + c.checks.length + ' 项对不上（最大差额 ' + fmtCny(Math.max(...c.checks.map(k => Math.abs(k.diff)))) + '），见底部校验卡']);
   if (c.unmatched.length)
@@ -2133,14 +2147,14 @@ function renderNow() {
       const head = p.mo + ' 月底' + odWhat(p.mo) + '，要扣 <b>' + fmtCny(p.need) + '</b>';
       if (ok) return '<div class="ins-sub">　' + head + '　→ <span style="color:var(--green)">✓ 可以只在一个项目扣</span>' +
         '<br>　　　' + an(p.anchor) + '：已有额度 ' + fmtCny(p.usedAnchor) + (p.xferAnchor > 0.5 ? ' + 从 IT外包 调 ' + fmtCny(p.xferAnchor) + (p.xferWallets.length ? '（' + p.xferWallets.map(x => esc(shortName(x.name)) + ' ' + fmtCny(x.amt)).join('、') + '）' : '') : '') +
-        (p.refund > 0.5 ? '，其中 <span style="color:var(--amber)">' + fmtCny(p.refund) + ' 要等 12 月 15 日前的验收返还</span>' : '') + '</div>';
+        (p.refund > 0.5 ? '，其中 <span style="color:var(--amber)">' + fmtCny(p.refund) + ' 要等 PO 验收返还（最晚 12 月下旬到账）</span>' : '') + '</div>';
       return '<div class="ins-sub" style="color:' + (p.left > 0.5 ? 'var(--red)' : 'var(--amber)') + '">　' + head + '　→ <b>做不到只在一个项目扣</b>' +
         '<br>　　　' + an(p.anchor) + '能出 ' + fmtCny(p.usedAnchor + p.xferAnchor + p.refund) + (p.refund > 0.5 ? '（含验收返还 ' + fmtCny(p.refund) + '）' : '') +
         (p.other > 0.5 ? '；<b>要分 ' + fmtCny(p.other) + ' 到别的项目</b>' : '') + (p.left > 0.5 ? '；还有 <b>' + fmtCny(p.left) + ' 没有钱扣</b>' : '') +
         (p.mo === 12 && (O.projList.length > 1 || (P && P.tookReserve > 0.5) || p.refund > 0.5) ? '<br>　　　<span class="muted">可以试：' + [
           O.projList.length > 1 ? '把 12 月的锚定项目换成另一个（下方可选，整张卡跟着重算）' : '',
           (P && P.tookReserve > 0.5) ? '12 月的 PO 占了这个项目留给 OD 的 ' + fmtCny(P.tookReserve) + '，让 PO 少从这个项目拿钱就能多留一些' : '',
-          p.refund > 0.5 ? '其中的 ' + fmtCny(p.refund) + ' 靠验收返还，12 月 15 日前验收完才用得上' : ''].filter(Boolean).join('；') + '</span>' : '') + '</div>';
+          p.refund > 0.5 ? '其中的 ' + fmtCny(p.refund) + ' 靠 PO 验收返还（最晚 12 月下旬到账）' : ''].filter(Boolean).join('；') + '</span>' : '') + '</div>';
     };
     const odFutureHtml = O.plans.length
       ? '<div class="ins-sub"' + (O.futureGap > 1000 ? ' style="color:var(--amber)"' : '') + '>往后看：扣完这个月后 OD 额度剩 ' + fmtCny(O.afterCur) + (O.futureGap > 1000 ? '；到 ' + odLabel + ' 还要再调 <b>' + fmtCny(O.futureGap) + '</b>' : '') + '</div>' +
@@ -2153,7 +2167,7 @@ function renderNow() {
     const odCurBody = (O.curWallets.length ? '<div class="ins-sub">' + (c.hasProj ? '在' + an(O.anchorCur) + '内：' : '') + O.curWallets.map(x => wl(x) + ' ' + fmtCny(x.amt)).join('、') + '</div>' : '') +
       '<div class="ins-sub">' + odCurLabel + '，要扣 ' + fmtCny(O.curNeed) + '；现有 OD 额度 ' + fmtCny(O.have) +
       (O.curOther > 0.5 ? '；<span style="color:var(--amber)">本月要分两个项目：锚定项目 ' + fmtCny(O.curUsed + O.curTransfer + O.curRefund) + '、其他项目 ' + fmtCny(O.curOther) + '</span>' : (c.hasProj ? '；在' + an(O.anchorCur) + '里扣' : '')) +
-      (O.curRefund > 0.5 ? '；其中 <span style="color:var(--amber)">' + fmtCny(O.curRefund) + ' 要等 12 月 15 日前的验收返还</span>' : '') + '</div>';
+      (O.curRefund > 0.5 ? '；其中 <span style="color:var(--amber)">' + fmtCny(O.curRefund) + ' 要等 PO 验收返还（最晚 12 月下旬到账）</span>' : '') + '</div>';
     if (O.curShort > 0.5) html += '<div class="ins" style="border-left-color:var(--red)"><div class="ins-head">② <b style="color:var(--red)">OD 额度不够，且没有钱可调：这个月底缺 ' + fmtCny(O.curShort) + '</b></div>' +
       odCurBody +
       '<div class="ins-sub">先催 BA 到账或催验收返还；也可以少下一点 PO（参考区间下限 ' + fmtCny(P ? P.low : 0) + '）把额度让给 OD</div>' + odFutureHtml + '</div>';
@@ -2177,6 +2191,7 @@ function renderNow() {
       const walletsOf = f => YP.wallets.filter(w => f(w) > 0.5).map(w => wtag(w.code, w.proj) + ' ' + fmtCny(f(w))).join('、');
       const odFrom = pl => [
         pl.usedAnchor > 0.5 ? '已有 OD 额度 ' + fmtCny(pl.usedAnchor) : '',
+        pl.temp > 0.5 ? '其中已约定的临时 OD <b>' + fmtCny(pl.temp) + '</b>' + (pl.tempHc ? '（' + pl.tempHc + ' 人，写在变动计划里）' : '') : '',
         pl.xferAnchor > 0.5 ? '从 IT外包 调 ' + fmtCny(pl.xferAnchor) + (pl.xferWallets.length ? '（' + pl.xferWallets.map(x => wtag(x.code, x.proj) + ' ' + fmtCny(x.amt)).join('、') + '）' : '') : '',
         pl.refund > 0.5 ? '<span style="color:var(--amber)">其中 ' + fmtCny(pl.refund) + ' 靠验收返还</span>' : '',
         pl.other > 0.5 ? '<span style="color:var(--red)">要分 ' + fmtCny(pl.other) + ' 到别的项目</span>' : '',
@@ -2188,12 +2203,12 @@ function renderNow() {
       const steps = [];
       if (nov && P) steps.push({ when: '11-20', title: '下 12 月 PO（团队 12 月的消耗）', amt: YP.poNext, from: P.projs.length ? '从 ' + P.projs.map(x => '<b>' + esc(x) + '</b>').join('、') + ' 出' : '', note: '明细见最上面的 ①' + (poNoMoney > 0.5 ? '；其中 ' + fmtCny(poNoMoney) + ' 没有钱可出' : '') });
       if (YP.curOd) steps.push({ when: c.curM + ' 月底', title: nov ? 'OD 扣 10 月的费用' : 'OD 年终清算（11 月 + 12 月 + 年终奖）', amt: YP.curOd.need, from: odFrom(YP.curOd) });
-      if (d.refundPast > 0.5) steps.push({ when: '12-15 前', title: '往月的 PO 验收，冻结的钱返还到账', amt: d.refundPast, from: walletsOf(w => w.refundPast), note: '可用于年底的 OD 清算、临时 OD、1 月 PO' });
+      if (d.refundPast > 0.5) steps.push({ when: '12-15 前', title: '往月的 PO 验收，冻结的钱返还到账', amt: d.refundPast, from: walletsOf(w => w.refundPast), note: '可用于年终清算、临时 OD、1 月 PO' });
+      if (nov && d.refundCur > 0.5) steps.push({ when: '12 月下旬', title: '11 月这张 PO 多下的部分验收，返还到账', amt: d.refundCur, from: walletsOf(w => w.refundCur), note: '年终清算和临时 OD 是月底才扣，赶得上；1 月 PO 要看下得早不早' });
       if (nov && YP.decOd) steps.push({ when: '12-31', title: 'OD 年终清算（11 月 + 12 月 + 年终奖）', amt: YP.decOd.need, from: odFrom(YP.decOd) });
-      if (d.temp.total > 0.5) steps.push({ when: '12-31 前', title: '临时 OD 补达标（冲今年的执行率）', amt: d.temp.total, from: d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt) + (x.fromRef > 0.5 ? '<span class="muted">（' + fmtCny(x.fromRef) + ' 靠验收返还）</span>' : '')).join('、') + (d.temp.people ? '；约合 ' + d.temp.people + ' 人，清算前到岗' : '') });
-      if (nov && d.refundCur > 0.5) steps.push({ when: '12 月下旬', title: '11 月这张 PO 多下的部分验收，返还到账', amt: d.refundCur, from: walletsOf(w => w.refundCur), note: '只赶得上下 1 月的 PO' });
+      if (d.temp.total > 0.5) steps.push({ when: '12-31 前', title: '若要补达标，还需再挂临时 OD（尚未约定）', amt: d.temp.total, note: '已约定的临时 OD 已算在上面的清算里；这部分要提前和别的团队谈好、写进变动计划', from: d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt) + (x.fromRef > 0.5 ? '<span class="muted">（' + fmtCny(x.fromRef) + ' 靠验收返还）</span>' : '')).join('、') + (d.temp.people ? '；约合 ' + d.temp.people + ' 人，清算前到岗' : '') });
       steps.push({ when: nov ? '12-20' : '现在', title: '下 1 月 PO（用达标之后剩下的钱）', amt: J.reserve, from: (J.parts && J.parts.length) ? partsHtml(J.parts, true) : allocLine(J.alloc, true),
-        note: '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>（只能满足 ' + (J.need > 0 ? Math.round(J.reserve / J.need * 100) : 0) + '%）' : '，✓ 够') + (J.odBackTotal > 0.5 ? '；其中 ' + fmtCny(J.odBackTotal) + ' 要先把 OD 额度调回 IT外包' : '') });
+        note: '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>（只能满足 ' + (J.need > 0 ? Math.round(J.reserve / J.need * 100) : 0) + '%）' : '，✓ 够') + (J.odBackTotal > 0.5 ? '；其中 ' + fmtCny(J.odBackTotal) + ' 要先把 OD 额度调回 IT外包' : '') + (d.temp.total > 0.5 ? '；以上已扣掉未约定的临时 OD，如果不挂约能留 ' + fmtCny(Math.min(J.need, J.reserve + d.temp.total)) : '') });
       if (d.unspent > 10000) steps.push({ when: '年底', title: '达标并留足 1 月后还花不掉的钱', amt: d.unspent, from: walletsOf(w => (!w.jan && w.left > 10000 ? w.left : 0)), note: '年底临时加 OD / 找别人花 / 调低目标' });
       const must = YP.poNext + (YP.curOd ? YP.curOd.need : 0) + (YP.decOd ? YP.decOd.need : 0);
       const moneyIn = d.refundPast + (nov ? d.refundCur : 0);
@@ -2206,11 +2221,11 @@ function renderNow() {
       const n0 = v => v > 0.5 ? fmtCny(v) : '<span class="muted">—</span>';
       html += '<div class="ye"><div class="ye-title">年底资金安排<span class="muted">（从现在排到明年 1 月；按钱的优先级排，排在前面的先拿到钱）</span></div>' +
         '<div class="kpi-grid" style="margin-top:6px">' +
-        tile('达标来源', d.hitFinal + ' / ' + d.assessed, miss.length ? '未达标：' + miss.slice(0, 3).map(r => esc(r.name) + ' 差 ' + fmtCny(r.shortFinal)).join('、') + (miss.length > 3 ? '…' : '') + (covered ? '；另 ' + covered + ' 个靠临时 OD 补上' : '') : '全部达标 ✓' + (covered ? '（其中 ' + covered + ' 个靠临时 OD 补上）' : ''), miss.length ? 'c-amber' : 'c-green') +
+        tile('达标来源', d.hitFinal + ' / ' + d.assessed, miss.length ? '未达标：' + miss.slice(0, 3).map(r => esc(r.name) + ' 差 ' + fmtCny(r.shortFinal)).join('、') + (miss.length > 3 ? '…' : '') + (covered ? '；另 ' + covered + ' 个要靠尚未约定的临时 OD 补上' : '') : '全部达标 ✓' + (covered ? '（其中 ' + covered + ' 个要靠尚未约定的临时 OD 补上）' : ''), miss.length ? 'c-amber' : 'c-green') +
         tile('预计总体执行率', fmtPct(c.forecastRate), '加权目标 ' + fmtPct(d.weightedTarget) + (d.temp.total > 0 ? ' · 补临时OD后 ' + fmtPct(c.planCnyTotal > 0 ? d.withTemp / c.planCnyTotal : null) : ''), d.hitFinal >= d.assessed ? 'c-green' : (d.hit >= d.assessed ? 'c-amber' : 'c-red')) +
         tile('留给 1 月的 PO', fmtCny(J.reserve), '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>' : ' ✓ 够') + (YP.janMax > 0.5 ? ' · 理论上限 ' + fmtCny(YP.janMax) : ''), janUnfunded > 0.5 ? 'c-amber' : 'c-green') +
         '</div>' +
-        '<div class="ins-sub">总账：今年必须花的 <b>' + fmtCny(must) + '</b>（12 月 PO ＋ OD）＋ 冲执行率的临时 OD <b>' + fmtCny(d.temp.total) + '</b> ＋ 留给 1 月 <b>' + fmtCny(J.reserve) + '</b> ＝ <b>' + fmtCny(must + d.temp.total + J.reserve) + '</b>；钱的来源：现在可用 ' + fmtCny(YP.have) + ' ＋ 验收返还 ' + fmtCny(moneyIn) + ' ＝ <b>' + fmtCny(YP.have + moneyIn) + '</b>。' + verdict + '</div>' +
+        '<div class="ins-sub">总账：今年必须花的 <b>' + fmtCny(must) + '</b>（12 月 PO ＋ OD）＋ 若补达标的临时 OD（未约定）<b>' + fmtCny(d.temp.total) + '</b> ＋ 留给 1 月 <b>' + fmtCny(J.reserve) + '</b> ＝ <b>' + fmtCny(must + d.temp.total + J.reserve) + '</b>；钱的来源：现在可用 ' + fmtCny(YP.have) + ' ＋ 验收返还 ' + fmtCny(moneyIn) + ' ＝ <b>' + fmtCny(YP.have + moneyIn) + '</b>。' + verdict + '</div>' +
         (YP.janMax > 0.5 ? '<div class="ins-sub muted">留给 1 月的钱 = 各来源达标之后的结余，理论上限 ' + fmtCny(YP.janMax) + '；其中约 ' + fmtCny(YP.beyond) + ' 被超出目标的执行占用（12 月的 PO、OD 超出目标的部分，今年必须花）。想给 1 月多留：调低某些来源的目标，或催 BA 把没到账的预算补齐。</div>' : '') +
         '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>时间</th><th>动作</th><th class="num">金额</th><th>钱从哪来</th></tr></thead><tbody>' +
         steps.map(s => '<tr><td class="muted" style="white-space:nowrap">' + s.when + '</td><td><b>' + s.title + '</b></td><td class="num"><b>' + fmtCny(s.amt) + '</b></td><td>' + (s.from || '') + (s.note ? '<div class="muted" style="margin-top:2px">' + s.note + '</div>' : '') + '</td></tr>').join('') +
@@ -2218,16 +2233,16 @@ function renderNow() {
         (ws.length ? '<details class="fold"><summary>按钱包看（每个钱包的钱怎么进出）</summary><div class="tbl-wrap"><table class="tbl"><thead><tr><th>钱包</th>' + cols.map(x => '<th class="num">' + x[0] + '</th>').join('') + '</tr></thead><tbody>' +
           ws.map(w => '<tr><td>' + wtag(w.code, w.proj) + '</td>' + cols.map(x => '<td class="num">' + n0(x[1](w)) + '</td>').join('') + '</tr>').join('') +
           '<tr style="font-weight:600"><td>合计</td>' + cols.map(x => '<td class="num">' + fmtCny(sum(ws, x[1])) + '</td>').join('') + '</tr></tbody></table></div>' +
-          '<div class="muted" style="margin-top:6px">现在可用 ＋ 返还到账 − 各项支出 ＝ 年底剩余。返还的钱用在哪一步就计在哪一步' + (nov ? '；12 月下旬才到的那笔（11 月 PO 多下的）只用于 1 月 PO' : '') + '。</div></details>' : '') +
+          '<div class="muted" style="margin-top:6px">现在可用 ＋ 返还到账 − 各项支出 ＝ 年底剩余。返还的钱用在哪一步就计在哪一步' + (nov ? '；返还的钱按优先级用：年终清算 → 临时 OD → 1 月 PO' : '') + '。</div></details>' : '') +
         '</div>';
     }
     /* 分来源推演表（折叠） */
     const yes = v => v > 0 ? fmtCny(v) : '<span class="muted">—</span>';
     html += '<details class="fold"' + (foldOpen ? ' open' : '') + '><summary>分来源推演表（' + d.rows.length + ' 个来源，从现在推到 12 月 31 日）</summary><div class="tbl-wrap"><table class="tbl"><thead><tr>' +
       '<th>预算来源</th><th class="num">规划</th><th class="num">目标</th><th class="num">已执行</th><th class="num">在途将执行</th><th class="num">缺口</th><th class="num">可支配</th>' +
-      '<th class="num">后续PO<br><span class="muted">含本月</span></th><th class="num">常规OD</th><th class="num">临时OD</th><th class="num">1月PO</th><th class="num">年底预计</th><th>达标</th><th class="num">余量去向</th></tr></thead><tbody>';
+      '<th class="num">后续PO<br><span class="muted">含本月</span></th><th class="num">常规OD</th><th class="num">临时OD<br><span class="muted">未约定</span></th><th class="num">1月PO</th><th class="num">年底预计</th><th>达标</th><th class="num">余量去向</th></tr></thead><tbody>';
     d.rows.forEach(r => {
-      const st = !r.assessed ? '<span class="muted">' + (r.unmatched ? '未关联' : '不考核') + '</span>' : r.notGranted ? '<span style="color:var(--red)">未到账</span>' : (r.hitFinal ? (r.hit ? '<span style="color:var(--green)">✓</span>' : '<span style="color:var(--amber)" title="只靠 PO 和常规 OD 达不了标，年底加临时 OD 后达标">✓ 靠临时OD</span>') : '<span style="color:var(--red)">✗ 差' + fmtCny(r.shortFinal) + '</span>');
+      const st = !r.assessed ? '<span class="muted">' + (r.unmatched ? '未关联' : '不考核') + '</span>' : r.notGranted ? '<span style="color:var(--red)">未到账</span>' : (r.hitFinal ? (r.hit ? '<span style="color:var(--green)">✓</span>' : '<span style="color:var(--amber)" title="只靠 PO 和常规 OD 达不了标，年底加临时 OD 后达标">✓ 靠临时OD<br>（未约定）</span>') : '<span style="color:var(--red)">✗ 差' + fmtCny(r.shortFinal) + '</span>');
       const leftTxt = r.jan > 0 ? '留1月 ' + fmtCny(r.jan) : (r.left > 1000 ? '花不掉 ' + fmtCny(r.left) : '<span class="muted">—</span>');
       html += '<tr' + (r.notGranted ? ' style="opacity:.7"' : '') + '><td><b>' + planLabel(r) + '</b>' + (c.hasProj && r.wallets.length > 1 ? '<div class="muted">' + r.wallets.map(w => esc(w.proj) + ' ' + fmtCny(w.itw + w.od)).join(' / ') + '</div>' : '') + '</td>' +
         '<td class="num">' + (r.planCny ? fmtCny(r.planCny) : '—') + '</td><td class="num">' + (r.target != null && r.assessed ? fmtPct(r.target) : '—') + '</td>' +
@@ -2235,7 +2250,7 @@ function renderNow() {
         '<td class="num">' + yes(r.po) + (r.poNext > 0 ? '<div class="muted">本月 ' + fmtCny(r.poNext) + '</div>' : '') + '</td><td class="num">' + yes(r.odExec) + (r.odXfer > 0 ? '<div class="muted">需调 ' + fmtCny(r.odXfer) + '</div>' : '') + '</td><td class="num">' + yes(r.temp) + '</td><td class="num">' + yes(r.jan) + '</td>' +
         '<td class="num">' + (r.planCny ? fmtPct(r.rate) : '—') + '</td><td>' + st + '</td><td class="num">' + leftTxt + '</td></tr>';
     });
-    html += '</tbody></table></div><div class="muted" style="margin-top:6px">缺口 = 规划×目标 − 已执行 − 在途将执行。后续 PO/常规 OD 先补缺口大的来源；临时 OD 只在年底排；1 月 PO 只用达标后的 IT外包 结余。' + (d.exclExec > 0.5 ? ' 带 * 的「在途将执行」含剔除出决策的 PO 还会执行的 <b>' + fmtCny(d.exclExec) + '</b>：别的团队在花你的预算，计入该来源的年底执行，但不抵团队的月度 PO。' : '') + '</div></details>';
+    html += '</tbody></table></div><div class="muted" style="margin-top:6px">缺口 = 规划×目标 − 已执行 − 在途将执行。后续 PO/常规 OD 先补缺口大的来源；临时 OD（未约定）只在年底排，已约定的临时 OD 人员算在常规 OD 里；1 月 PO 只用达标后的 IT外包 结余。' + (d.exclExec > 0.5 ? ' 带 * 的「在途将执行」含剔除出决策的 PO 还会执行的 <b>' + fmtCny(d.exclExec) + '</b>：别的团队在花你的预算，计入该来源的年底执行，但不抵团队的月度 PO。' : '') + '</div></details>';
     box.innerHTML = html;
     drawPoCharts(c, d, d.isDec ? J.parts : (P ? P.parts : null), d.isDec ? J.alloc : (P ? P.alloc : null));
   }
@@ -2251,7 +2266,7 @@ function renderNow() {
     else if (O.curShort > 0.5) acts.push({ t: '<b>这个月底 OD 额度缺 ' + fmtCny(O.curShort) + ' 且无钱可调</b>：先催 BA 到账 / 催验收返还，否则月底扣减会落到「费用先结算至PO受益部门」' });
     O.plans.filter(p => p.other > 0.5 || p.left > 0.5).forEach(p => acts.push({ t: '<b>' + p.mo + ' 月底的 OD 扣减' + (p.left > 0.5 ? '有 ' + fmtCny(p.left) + ' 没有钱扣' : '要分两个项目（' + fmtCny(p.other) + ' 在锚定项目之外）') + '</b>：可换个锚定项目，或让 12 月、1 月的 PO 从别的钱包出，见决策卡 ②' }));
     d.baList.slice(0, 3).forEach(b => acts.push({ t: '催 BA：<b>' + esc(b.name) + '</b> 缺 ' + fmtCny(b.short) + '（' + b.kind + '），只靠 PO 消化最晚 ' + b.latest + ' 月到账' }));
-    if (d.yearEnd && d.temp.total > 0) acts.push({ t: '安排<b>临时 OD ' + fmtCny(d.temp.total) + '</b>' + (d.temp.people ? '（约合 ' + d.temp.people + ' 人）' : '') + '，12 月清算前到岗：' + d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt)).join('、') });
+    if (d.yearEnd && d.temp.total > 0) acts.push({ t: '若要补达标，还需再挂<b>临时 OD ' + fmtCny(d.temp.total) + '</b>' + (d.temp.people ? '（约合 ' + d.temp.people + ' 人）' : '') + '——尚未约定，要提前和别的团队谈好并写进变动计划：' + d.temp.list.map(x => esc(x.name) + ' ' + fmtCny(x.amt)).join('、') });
     if (d.yearEnd && J.short > 0) acts.push({ t: '1 月 PO 缺 ' + fmtCny(J.short) + '：到「数据管理 → 年初规划」调低某来源目标（每调低 ' + fmtCny(1000) + '，可留就多 ' + fmtCny(1000) + '）', btn: 'goto:data', btnTxt: '去调目标' });
   }
   if (c.unmatched.length) acts.push({ t: '关联 ' + c.unmatched.length + ' 个新预算来源编码（' + c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '），否则执行率分母不准', btn: 'link:manage', btnTxt: '去关联' });
