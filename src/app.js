@@ -204,7 +204,31 @@ async function setDatasetDir() {
   try { await idbSet('dir', dirHandle); } catch (e) { }
   await scanDataset(true);
 }
-async function scanDataset(manual) {
+/* ---- 解析版本 ----
+   导入时解析好、存下来的数据（PO 明细行、执行表快照、团队配置），在解析逻辑变了以后不会自己更新；
+   而数据集文件夹里的文件没变就不会重读，于是刷新页面也还是旧结果。
+   做法：每类一个版本号，改了这一类的解析逻辑（或导入时算好存下来的字段）就把号 +1；
+   打开看板时发现数据里的版本号落后 → 把数据集文件夹里这一类文件全部重读一遍（文件没变也重读），不需要用户手动重导。 */
+const PARSE_VER = { po: 2, exec: 1, team: 1 };
+const PARSE_KEYS = ['po', 'exec', 'team'];
+const PARSE_NAME = { po: 'PO 明细', exec: '预算执行表', team: '团队配置' };
+// 没有版本号的旧数据：PO 明细当作第 0 版（服务期识别改过，要重读）；执行表、团队配置当作第 1 版
+const parseVerOf = s => Object.assign({ po: 0, exec: 1, team: 1 }, (s && s.parseVer) || {});
+const parseVerNeed = () => PARSE_KEYS.filter(k => parseVerOf(state)[k] !== PARSE_VER[k]);
+const parseVerMark = kinds => { if (!(kinds && kinds.length)) return; state.parseVer = Object.assign(parseVerOf(state)); kinds.forEach(k => { state.parseVer[k] = PARSE_VER[k]; }); };
+// 这一类有没有数据可重读（团队配置可能是手工录入的，不在数据集里也不提示）
+const parseKindHasData = k => k === 'po' ? Object.keys(state.poDataByYear || {}).some(y => ((((state.poDataByYear || {})[y] || {}).rows) || []).length > 0) : k === 'exec' ? (state.execSnaps || []).length > 0 : false;
+// 这次扫描要读哪些文件：新文件全要；解析规则变了的类别，文件没变也要重读。
+// known[签名] 记着每个文件上次识别成的类型（po / exec / team / unknown / error）；更早的记录只有一个 1，类型未知，需要读一下才知道
+function pickScanFiles(files, known, sigOf, verNeed) {
+  return files.filter(it => {
+    const raw = known[sigOf(it)];
+    if (raw == null) return true;
+    if (!verNeed.length) return false;
+    return typeof raw !== 'string' || verNeed.indexOf(raw) >= 0;
+  }).map(it => Object.assign({}, it, { _new: known[sigOf(it)] == null }));
+}
+async function scanDataset(manual, force) {
   if (!dirHandle) { if (manual) alert('请先设置数据集文件夹'); return false; }
   let perm = 'granted';
   try { perm = await dirHandle.queryPermission({ mode: 'read' }); } catch (e) { }
@@ -217,30 +241,65 @@ async function scanDataset(manual) {
   let known = {};
   try { known = JSON.parse(localStorage.getItem('budgetDash.dataset') || '{}'); } catch (e) { }
   const sigOf = it => it.project + '|' + it.file.name + '|' + it.file.size + '|' + it.file.lastModified;   // 含所在文件夹：挪动过 = 新文件
-  const fresh = files.filter(it => !known[sigOf(it)]);
-  if (!fresh.length) { if (manual) alert('数据集文件夹里没有新文件（识别到的 ' + files.length + ' 个文件都已导入过）'); return false; }
-  files.forEach(it => { known[sigOf(it)] = 1; });
+  const verNeed = PARSE_KEYS.filter(k => (force ? PARSE_KEYS : parseVerNeed()).indexOf(k) >= 0);   // 解析规则变了的类别
+  // 规则变了的类别：已经重读的、或根本没有这类数据可重读的，记为已更新；剩下的（以前是手动导入的）继续在首页提示，
+  // 并记下其中"数据集文件夹里没有这类文件"的，提示改成手动导入
+  const finishVer = imported => {
+    const inFolder = k => files.some(it => known[sigOf(it)] === k);
+    const done = verNeed.filter(k => imported.indexOf(k) >= 0 || !parseKindHasData(k));
+    if (done.length) { parseVerMark(done); }
+    const noFile = verNeed.filter(k => done.indexOf(k) < 0 && !inFolder(k));
+    const before = JSON.stringify(state.parseVerNoFile || []);
+    state.parseVerNoFile = (state.parseVerNoFile || []).filter(k => verNeed.indexOf(k) < 0).concat(noFile);
+    if (done.length || JSON.stringify(state.parseVerNoFile) !== before) save();
+    return verNeed.filter(k => done.indexOf(k) < 0);
+  };
+  const todo = pickScanFiles(files, known, sigOf, verNeed);
+  if (!todo.length) {
+    const left = finishVer([]);
+    const msg = left.length
+      ? '看板更新了 ' + left.map(k => PARSE_NAME[k]).join('、') + ' 的解析规则，但数据集文件夹里没有这类文件——它们以前是手动导入的，请用「导入平台数据」重新导入一次'
+      : (verNeed.length ? '' : '数据集文件夹里没有新文件（识别到的 ' + files.length + ' 个文件都已导入过）');
+    if (manual && msg) alert(msg);
+    return false;
+  }
+  const nNew = todo.filter(it => it._new).length;
+  const r = await importFilesAuto(todo, {
+    verNeed, noLog: nNew === 0,   // 只是按新规则重读、没有新文件：不记入导入记录（回测用的是真实导入）
+    onKind: (it, kind) => { known[sigOf(it)] = kind || 'unknown'; },
+    onError: it => { known[sigOf(it)] = 'error'; }
+  });
+  files.forEach(it => { if (known[sigOf(it)] == null) known[sigOf(it)] = 'unknown'; });
   localStorage.setItem('budgetDash.dataset', JSON.stringify(known));
-  const summary = await importFilesAuto(fresh);
-  save();
-  alert('📁 数据集自动导入完成：\n\n' + summary + '\n\n快照日期按文件导出时间记录。');
+  const left = finishVer(r.kinds);
+  const reRead = verNeed.filter(k => r.kinds.indexOf(k) >= 0);
+  const head = reRead.length
+    ? '🔄 看板更新了 ' + reRead.map(k => PARSE_NAME[k]).join('、') + ' 的解析规则，已按新规则重新读取数据集里的文件' + (nNew ? '（同时导入了 ' + nNew + ' 个新文件）' : '') + (left.length ? '\n⚠️ ' + left.map(k => PARSE_NAME[k]).join('、') + '以前是手动导入的，数据集里没有，需要用「导入平台数据」重新导入一次' : '')
+    : '📁 数据集自动导入完成';
+  alert(head + '：\n\n' + r.text + '\n\n快照日期按文件导出时间记录。');
   return true;
 }
-async function importFilesAuto(items) {
+async function importFilesAuto(items, opts) {
+  opts = opts || {};
   const parsed = [];
   for (const it of items) {
     const f = it.file;
     try {
       const rows = await parseWorkbookFile(f);
       const kind = detectKind(rows);
+      if (opts.onKind) opts.onKind(it, kind);
+      if (it._new === false && opts.verNeed && opts.verNeed.indexOf(kind) < 0) continue;   // 规则没变的类别：读一下只为确认类型，不重新导入
       const rec = { name: f.name, project: it.project || '', kind, rows, file: f, snapDate: fileSnapDate(f) };
       if (kind === 'team') { try { rec.sheets = await parseAllSheets(f); } catch (e) { } }
       parsed.push(rec);
-    } catch (err) { parsed.push({ name: f.name, project: it.project || '', kind: '', error: '解析失败 ' + err.message }); }
+    } catch (err) {
+      if (opts.onError) opts.onError(it);
+      parsed.push({ name: f.name, project: it.project || '', kind: '', error: '解析失败 ' + err.message });
+    }
   }
   const r = importParsed(parsed);
-  if (r.touched) recordImportLog(calc());   // 每次导入记一份决策快照（并回测上次的估计）
-  return r.text;
+  if (r.touched && !opts.noLog) recordImportLog(calc());   // 每次导入记一份决策快照（并回测上次的估计）
+  return r;
 }
 // 已导入过的花钱项目（子文件夹名），供手动导入时选择
 function knownProjects() {
@@ -248,22 +307,22 @@ function knownProjects() {
   (state.execSnaps || []).forEach(x => Object.keys(x.byProject || {}).forEach(p => s.add(p)));
   return Array.from(s).sort();
 }
-// 导入核心（数据集自动扫描与手动拖拽共用）。items = [{name, project, kind, rows, sheets?, snapDate, error?}]
+// 导入核心（数据集自动扫描与手动拖拽共用）。items = [{name, project, kind, rows, sheets?, snapDate, file?, error?}]
 // project = 花钱项目标识（文件所在的一级子文件夹名）。执行表没有项目列，必须带 project 才导入。
+// PO 明细：每个项目文件夹取最新的一份（每次导出都是全年全量，旧的已被新的覆盖），只替换这个项目的行，别的项目原来的行保留。
+// 团队配置：留着的旧文件里取最新的一份。file.lastModified = 文件修改时间；手动导入没有 file 时同项目的后一个覆盖前一个。
 function importParsed(items) {
   const parts = [];
-  const poAll = []; let asOf = 0;
-  const execFiles = [];
-  let teamGroups = null, teamPlan = null;
-  items.forEach(it => {
+  const poFiles = [], execFiles = [], teamFiles = [];
+  items.forEach((it, idx) => {
     if (it.error) { parts.push('❌ ' + it.name + '：' + it.error); return; }
     if (!it.kind) { parts.push('⚠️ ' + it.name + '：未能识别类型，已跳过'); return; }
     const tag = it.project ? '·' + it.project : '';
+    const mt = (it.file && it.file.lastModified) || 0;
     if (it.kind === 'po') {
       try {
         const r = parsePoRows(it.rows);
-        asOf = Math.max(asOf, r.asOf);
-        poAll.push(...r.rows);
+        poFiles.push({ project: it.project || '', name: it.name, mt, idx, r });
         learnProjectAlias(r.rows, it.project);
         parts.push('📄 ' + it.name + '（PO明细' + tag + '）：' + r.rows.length + ' 行');
         if (!r.hasEndCol) parts.push('⚠️ ' + it.name + '（PO明细' + tag + '）：没找到「费用结束时间」列（表头要有"费用结束/截止/到期"或"费用起止"）——服务期只能按各 PO 的月度金额推断，当月 PO 的预测可能被算成返还');
@@ -274,20 +333,46 @@ function importParsed(items) {
       try { execFiles.push({ name: it.name, project: it.project, date: it.snapDate, rows: parseExecRows(it.rows) }); }
       catch (err) { parts.push('❌ ' + it.name + '（执行表）：' + err.message); }
     } else if (it.kind === 'team') {
-      let persons = null, tPlan = null, tNotes = [];
-      if (it.sheets) { const r2 = parseTeamSheets(it.sheets); if (r2.groups.length) persons = r2.groups; tPlan = r2.plan; tNotes = r2.notes; }
+      let persons = null, tPlan = null;
+      const tNotes = [];
+      if (it.sheets) { const r2 = parseTeamSheets(it.sheets); if (r2.groups.length) persons = r2.groups; tPlan = r2.plan; tNotes.push(...r2.notes); }
       if (!persons) persons = parseTeamTable(it.rows);
       if (!persons.length) { parts.push('⚠️ ' + it.name + '（团队配置）：未识别到人员（需要 PO/OD 页签+姓名/单价列，或 类型/人数/单价 列）'); return; }
-      teamGroups = persons.map(g => Object.assign({ poGroup: '' }, g));
-      teamPlan = tPlan;   // 页签式：以 Excel 的「变动计划」页签为准（没有该页签 = 清空）；平面表：保留已有的
-      const ownN = sum(persons.filter(g => g.kind === 'po' && g.poGroup), g => g.headcount || 0);
-      parts.push('👥 ' + it.name + '（团队配置）：' + sum(persons, g => g.headcount || 0) + ' 人 / ' + persons.length + ' 组已更新（以数据集为准）' +
-        (ownN ? '；其中 ' + ownN + ' 人标了 PO 归属' : '') + (tPlan && tPlan.length ? '；变动计划 ' + tPlan.length + ' 条' : ''));
-      tNotes.forEach(n => parts.push('ℹ️ ' + n));
+      teamFiles.push({ name: it.name, mt, idx, persons, tPlan, tNotes });
     }
   });
-  if (teamGroups && teamGroups.length) { state.team = teamGroups.map(g => ({ id: uid(), ...g })); if (teamPlan != null) state.teamPlan = teamPlan; touch('team'); }
-  if (poAll.length) { state.poDataByYear = state.poDataByYear || {}; state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: poAll }; touch('po'); }
+  // 同一组里取最新的：有修改时间按修改时间；都没有（手动导入）按先后顺序，后一个为准
+  const latest = list => list.reduce((pick, f) => (!pick || f.mt > pick.mt || (f.mt === pick.mt && !f.mt && f.idx > pick.idx)) ? f : pick, null);
+  const kinds = [];
+  const team = latest(teamFiles);
+  if (team) {
+    state.team = team.persons.map(g => Object.assign({ id: uid(), poGroup: '' }, g));
+    if (team.tPlan != null) state.teamPlan = team.tPlan;   // 页签式：以 Excel 的「变动计划」页签为准（没有该页签 = 清空）；平面表：保留已有的
+    touch('team');
+    const ownN = sum(team.persons.filter(g => g.kind === 'po' && g.poGroup), g => g.headcount || 0);
+    parts.push('👥 ' + team.name + '（团队配置）：' + sum(team.persons, g => g.headcount || 0) + ' 人 / ' + team.persons.length + ' 组已更新（以数据集为准）' +
+      (ownN ? '；其中 ' + ownN + ' 人标了 PO 归属' : '') + (team.tPlan && team.tPlan.length ? '；变动计划 ' + team.tPlan.length + ' 条' : '') +
+      (teamFiles.length > 1 ? '；共 ' + teamFiles.length + ' 份团队文件，以最新修改的「' + team.name + '」为准' : ''));
+    team.tNotes.forEach(n => parts.push('ℹ️ ' + n));
+    kinds.push('team');
+  }
+  const poBy = {};
+  poFiles.forEach(f => { if (!poBy[f.project] || latest([poBy[f.project], f]) === f) poBy[f.project] = f; });
+  const poChosen = Object.values(poBy);
+  poFiles.filter(f => poBy[f.project] !== f).forEach(f => parts.push('ℹ️ ' + f.name + '（PO明细' + (f.project ? '·' + f.project : '') + '）：同一文件夹里有更新的导出，以「' + poBy[f.project].name + '」为准'));
+  if (poChosen.length) {
+    state.poDataByYear = state.poDataByYear || {};
+    const cur = (state.poDataByYear[curYear()] || {}).rows || [];
+    // 只替换这次导入的项目文件夹，别的项目的行保留。早期导入的行没记所属文件夹（分不清来自哪个文件），一律丢掉：
+    // 它们本来就是从同样的导出文件读来的，那些项目再导入时会重新读进来；留着反而会和新行重复
+    const replaced = {};
+    let asOf = 0;
+    poChosen.forEach(f => { replaced[f.project] = 1; f.r.rows.forEach(x => { x.proj = f.project; }); asOf = Math.max(asOf, f.r.asOf); });
+    const kept = cur.filter(r => r.proj != null && !replaced[r.proj]);
+    state.poDataByYear[curYear()] = { updatedAt: todayStr(), asOf, rows: kept.concat(...poChosen.map(f => f.r.rows)) };
+    touch('po');
+    kinds.push('po');
+  }
   const notes = [];
   if (execFiles.length) {
     execFiles.forEach(x => {
@@ -300,13 +385,14 @@ function importParsed(items) {
     const dates = execFiles.map(x => x.date);
     notes.push(...rebuildMergedRows(dates), ...updateProjectPrints(execFiles));
     touch('exec');
+    kinds.push('exec');
   }
   // 导入提醒（放错文件夹、缺项目等）：留在风险区，下次导入时替换
   const dropped = items.filter(it => it.kind === 'exec' && !it.project);
   dropped.forEach(it => notes.push('「' + it.name + '」（执行表）没有花钱项目归属，未导入——请把它放进对应花钱项目的子文件夹'));
   state.importNotes = notes.map(text => ({ date: todayStr(), text }));
   notes.forEach(n => parts.push('⚠️ ' + n));
-  return { text: parts.join('\n'), touched: !!(poAll.length || execFiles.length) };
+  return { text: parts.join('\n'), touched: !!(poChosen.length || execFiles.length), kinds };
 }
 // PO 明细行里的「IT项目名称/编码」→ 项目标识（子文件夹名）：从 PO 文件所在文件夹学到，取文件里出现最多的那个项目
 function learnProjectAlias(rows, project) {
@@ -946,6 +1032,7 @@ async function importAll() {
   const items = importCtx.files.map(f => ({ name: f.name, kind: f.kind, rows: f.rows, sheets: f.sheets, project: (f.project || '').trim(), snapDate }));
   const r = importParsed(items);
   if (r.touched) recordImportLog(calc());
+  parseVerMark(r.kinds);   // 手动导入的数据是按当前规则解析的
   save(); closeModal();
   alert('导入完成：\n\n' + r.text + (r.touched ? '\n\n所有指标已自动重算。' : ''));
 }
@@ -990,7 +1077,7 @@ function calc() {
   const projOfRow = r => {
     const n = r.itProject || '', cd = r.itProjectCode || '';
     const hit = alias[n] || alias[cd] || (projLatest[n] ? n : '') || (projLatest[cd] ? cd : '');
-    return hit || (projects.length === 1 ? projects[0] : '');
+    return hit || r.proj || (projects.length === 1 ? projects[0] : '');
   };
 
   /* ---- 规划关联与汇总（预算来源视角：跨项目合并） ---- */
@@ -1861,7 +1948,14 @@ function renderNow() {
   if (d && d.od.futureNeed > 0 && d.od.futureGap > 1000) risks.push(['amber', 'OD 额度将不够（往后看）', '扣完这个月后额度剩 ' + fmtCny(d.od.afterCur) + '；到 ' + odLabel + ' 还要再扣 ' + fmtCny(d.od.futureNeed) + '，届时需再调 <b>' + fmtCny(d.od.futureGap) + '</b>' + (d.od.futureNoMoney > 0.5 ? '（其中 ' + fmtCny(d.od.futureNoMoney) + ' 目前没有钱可调）' : '') + '——可在这个月顺手一起调']);
   d.od.plans.filter(p => p.other > 0.5 || p.left > 0.5).forEach(p => risks.push([p.left > 0.5 ? 'red' : 'amber', (p.left > 0.5 && p.other <= 0.5 ? 'OD 没有钱扣（' : 'OD 要分两个项目扣（') + p.mo + ' 月）', odWhat(p.mo) + '要扣 ' + fmtCny(p.need) + '，锚定项目 ' + esc(p.anchor) + ' 只能出 ' + fmtCny(p.usedAnchor + p.xferAnchor + p.refund) + (p.other > 0.5 ? '，<b>要分 ' + fmtCny(p.other) + ' 到别的项目</b>' : '') + (p.left > 0.5 ? '，<b>' + fmtCny(p.left) + ' 没有钱扣</b>' : '') + '——可换锚定项目，或让 PO 少从锚定项目拿钱（见决策卡）']));
   if (d && d.po && d.po.tookReserve > 0.5) risks.push(['red', 'PO 占用了留给 OD 的钱', '这次 PO 从锚定项目 ' + esc(d.od.anchorNext) + ' 里拿了 <b>' + fmtCny(d.po.tookReserve) + '</b>（本来是给后面的 OD 扣减留的）——后面的 OD 可能要分两个项目扣']);
-  if (c.poParsedOld) risks.push(['amber', 'PO 明细是更新看板之前导入的', '当时的数据里没有「费用结束时间」，服务期只能推断（上个月底开的 PO 按当月算）——<b>重新导入一次 PO 明细</b>，读到了起止时间判断才准；导入后到 PO 台账核对「服务期认作」']);
+  // 解析规则变了、又没能自动重读的类别（没设数据集、没授权、或这类数据以前是手动导入的）
+  const pvNeed = parseVerNeed().filter(parseKindHasData);
+  const pvNames = pvNeed.map(k => PARSE_NAME[k]).join('、');
+  const pvNoFile = pvNeed.length > 0 && pvNeed.every(k => (state.parseVerNoFile || []).indexOf(k) >= 0);   // 数据集文件夹里没有这类文件（以前是手动导入的）
+  const pvBtn = (!dirHandle || pvNoFile) ? 'import:open' : 'dataset:scan';
+  { const sb = $('#datasetScanBtn'); if (sb && dirHandle) sb.textContent = pvNeed.length ? '🔄 重读数据集' : '📁 扫描数据集'; }
+  if (pvNeed.length) risks.push(['red', '看板已更新，数据要按新规则重读', '看板更新了 ' + pvNames + ' 的解析规则，现在的数据还是按旧规则算的' + ((dirHandle && !pvNoFile) ? '——点右上角「重读数据集」，文件不用重新导出' : (pvNoFile ? '——数据集文件夹里没有这类文件，用「导入平台数据」把它们重新导入一次' : '——用「导入平台数据」把它们重新导入一次'))]);
+  else if (c.poParsedOld) risks.push(['amber', 'PO 明细是更新看板之前导入的', '当时的数据里没有「费用结束时间」，服务期只能推断（上个月底开的 PO 按当月算）——<b>重新导入一次 PO 明细</b>，读到了起止时间判断才准；导入后到 PO 台账核对「服务期认作」']);
   if (d && d.inflight.fc > 0 && d.inflight.fc < d.inflight.need * 0.95) risks.push(['amber', '当月 PO 不够', '当月在执行的 PO 预测 ' + fmtCny(d.inflight.fc) + ' < 团队当月需求 ' + fmtCny(d.inflight.need) + '，差 ' + fmtCny(d.inflight.need - d.inflight.fc) + '——需要补一张 PO']);
   if (d && d.inflight.over > 0) risks.push(['amber', '当月多下', '当月在执行的 PO 预测 ' + fmtCny(d.inflight.fc) + '，团队当月需求约 ' + fmtCny(d.inflight.need) + '，预计多下 <b>' + fmtCny(d.inflight.over) + '</b>（' + fmtPct(d.inflight.over / d.inflight.fc) + '），验收后才能回来']);
   if (d && d.yearEnd && J.short > 0) risks.push(['amber', '1 月 PO 缺口', '达标后的结余只够 1 月 PO ' + fmtCny(J.reserve) + '，需求 ' + fmtCny(J.need) + '，缺 <b>' + fmtCny(J.short) + '</b>——调低某来源目标 ' + fmtCny(J.short) + ' 即可补足（目标由你权衡）']);
@@ -2065,7 +2159,8 @@ function renderNow() {
   if (c.curM === 5 || c.curM === 11) acts.push({ t: '为 ' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算+年终奖') + '做准备：确认 OD 额度充足' + (c.curM === 5 ? '，必要时调拨' : '，并校准参数里的年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）') });
   const stale = ['po', 'exec'].some(k => { const dd = (state.updatedAt || {})[k]; const days = dd ? daysBetween(dd, todayStr()) : null; return days == null || days > freq; });
   if (stale) acts.push({ t: '导入最新平台数据（每个花钱项目的总览 + PO 明细，放进数据集对应子文件夹），月底/月初各一次', btn: 'import:open', btnTxt: '导入' });
-  if (c.poParsedOld) acts.push({ t: '<b>重新导入一次 PO 明细</b>：现在的数据是更新看板之前导入的，里面没有「费用结束时间」，PO 的服务期只能推断', btn: 'import:open', btnTxt: '导入' });
+  if (pvNeed.length) acts.push({ t: '<b>重新读取 ' + pvNames + '</b>：看板更新了它们的解析规则，现在的数据还是按旧规则算的' + ((dirHandle && !pvNoFile) ? '（数据集里的文件不用重新导出）' : ''), btn: pvBtn, btnTxt: (dirHandle && !pvNoFile) ? '重读数据集' : '去导入' });
+  else if (c.poParsedOld) acts.push({ t: '<b>重新导入一次 PO 明细</b>：现在的数据是更新看板之前导入的，里面没有「费用结束时间」，PO 的服务期只能推断', btn: 'import:open', btnTxt: '导入' });
   $('#nowActions').innerHTML = acts.length
     ? acts.map((a, i) => {
       const h = actHash(a.t);
@@ -2438,6 +2533,7 @@ function renderData() {
     '<button class="btn primary" data-action="data:saveFile">💾 保存到数据文件</button>' +
     '<button class="btn" data-action="data:openFile">📂 打开/恢复数据文件</button>' +
     '<button class="btn" data-action="dataset:scan">📁 扫描数据集</button>' +
+    '<button class="btn" data-action="dataset:rescan" title="看板更新后，把数据集文件夹里的文件按当前规则全部重读一遍（文件不用重新导出）">🔄 按当前规则重读</button>' +
     '<button class="btn" data-action="dataset:set">⚙️ 设置数据集文件夹</button>' +
     '<button class="btn" data-action="data:publish">📤 发布分享</button>' +
     '<button class="btn" data-action="data:export">📦 分层备份</button>' +
@@ -2835,6 +2931,7 @@ function demoState() {
   const availOf = o => Object.fromEntries(Object.entries(o).map(([c, r]) => [c, (r.itw.avail || 0) + (r.od.avail || 0)]));
   return {
     schemaVersion: 4,
+    parseVer: Object.assign({}, PARSE_VER),   // 示例数据是按当前规则生成的
     meta: { year: y, updateFreqDays: 14, lastHcCheck: t },
     years: { [y]: { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: t } },
     team: [
@@ -2951,6 +3048,10 @@ async function handleAction(action, el, e) {
   }
   if (action === 'excl:manage') return exclModal();
   if (action === 'dataset:scan') return scanDataset(true);
+  if (action === 'dataset:rescan') {
+    if (!confirm('按当前的解析规则，把数据集文件夹里的文件全部重新读一遍？\n\n看板更新后如果怀疑数据还是旧的，可以用它。只重读平台数据和团队配置，不影响你手工录入的规划、目标和参数。')) return;
+    return scanDataset(true, PARSE_KEYS.slice());
+  }
   if (action === 'data:openRecent') {
     if (!recentHandle) return;
     try {
@@ -3218,6 +3319,13 @@ function renderAll() {
         try { dp = await dh.queryPermission({ mode: 'read' }); } catch (e) { }
         if (dp === 'granted') { await scanDataset(false); }
       }
+    } catch (e) { }
+    // 解析规则变了的类别没能自动重读（没设数据集 / 没授权 / 文件夹里没有这类文件）：没有这类数据的直接记为已更新，有的留在首页提示
+    try {
+      const done = parseVerNeed().filter(k => !parseKindHasData(k));
+      if (done.length) { parseVerMark(done); save(); }
+      const sb = $('#datasetScanBtn');
+      if (sb && dirHandle) sb.textContent = parseVerNeed().some(parseKindHasData) ? '🔄 重读数据集' : '📁 扫描数据集';
     } catch (e) { }
     try {
       const h = await idbGet('fh');
