@@ -511,7 +511,8 @@ function defaultState() {
     years: { [y]: defaultYearParams() },
     plans: [],          // {id, year, code, name, amountW, target, planProject, dead, note}  code 可空，平台授予后关联
     grantLogs: [],      // {date, code, amountCny, note}      授予流水（辅助，按日期自然分年）
-    grantData: { byProject: {} },   // 平台导出的预算授予流水：byProject[项目] = {updatedAt, rows, prev}
+    grantData: { byProject: {} }, grantAttr: {},   // 授予流水的规划归属：{授予单号|编码: 规划 id}
+   // 平台导出的预算授予流水：byProject[项目] = {updatedAt, rows, prev}
     changes: null, changeLog: [], lastImportAt: '',   // 本次导入相比上次发现了什么 / 历次记录 / 上次导入日期
     team: [],           // {id, kind:'po'|'od', name, headcount, rate, poGroup}  团队配置（跨年沿用；poGroup=归哪张 PO）
     teamPlan: [],       // {ym:'2026-11', kind, rate, count, note}  变动计划：从生效年月起同类型同单价人数的增量
@@ -1212,20 +1213,29 @@ function calc() {
   };
 
   /* ---- 规划关联与汇总（预算来源视角：跨项目合并） ---- */
-  const planByCode = {};
-  plansY.forEach(p => { if (p.code) planByCode[p.code] = p; });
+  // 一个编码可以对应多条规划（多对一，少量场景）：以系统里的预算项为计算和考核单位——金额相加，目标按金额加权（不考核的按 0 计）
+  const tgtOf = p => (p && p.target != null) ? p.target : m.execRateTarget;
+  const plansByCode = {};
+  plansY.forEach(p => { if (p.code) (plansByCode[p.code] = plansByCode[p.code] || []).push(p); });
+  const planOf = c => {
+    const all = plansByCode[c] || [], live = all.filter(p => !p.dead);
+    if (!live.length) return all[0] || null;   // 都失效了：按失效处理
+    if (live.length === 1) return live[0];
+    const amt = sum(live, p => wusdOf(p));
+    return { id: live.map(p => p.id).join('+'), code: c, name: live.map(p => p.name).join(' + '), amountW: amt, target: amt > 0 ? sum(live, p => wusdOf(p) * tgtOf(p)) / amt : m.execRateTarget, plans: live, merged: true, dead: false, planProject: live[0].planProject || '' };
+  };
   // 特殊项：平台上的两个固定项目——「不向变更项目申请预算，费用由PO受益部门承担」「费用先结算至PO受益部门…」
   //   本来就不关联规划，不是我的预算：不参与任何计算，也不报"未关联"
   const specialRows = snap ? Object.keys(snap.rows).filter(c => excl.indexOf(c) < 0 && SPECIAL_RE.test(snap.rows[c].name || '')).map(c => ({ code: c, name: snap.rows[c].name, itwAvail: snap.rows[c].itw.avail || 0, itwExec: snap.rows[c].itw.exec || 0, odAvail: snap.rows[c].od.avail || 0, odExec: snap.rows[c].od.exec || 0 })) : [];
   const specialSet = new Set(specialRows.map(x => x.code));
   const codes = snap ? Object.keys(snap.rows).filter(c => excl.indexOf(c) < 0 && !specialSet.has(c)) : [];
-  const unmatched = codes.filter(c => !planByCode[c]);
+  const unmatched = codes.filter(c => !plansByCode[c]);
   const planCnyTotal = sum(plansY.filter(p => !p.dead), p => wusdOf(p) * 10000 * fx);
   let itwExec = 0, odExec = 0, availTotal = 0, itwFc = 0, remainTotal = 0, odRemainTotal = 0;
   const per = {};
   codes.forEach(c => {
     const r = snap.rows[c];
-    const p = planByCode[c] || null;
+    const p = planOf(c);
     const planCny = (p && !p.dead) ? wusdOf(p) * 10000 * fx : null;
     const ie = r.itw.exec || 0, oe = r.od.exec || 0;
     const av = (r.itw.avail || 0) + (r.od.avail || 0);
@@ -1244,8 +1254,7 @@ function calc() {
   const execTotal = itwExec + odExec;
   const execRate = planCnyTotal > 0 ? execTotal / planCnyTotal : null;
   // 总体目标 = 各来源目标的加权值（不考核的按 0 计）
-  const tgtOf = p => (p && p.target != null) ? p.target : m.execRateTarget;
-  let weightedTarget = null;
+  let weightedTarget = null;   // （tgtOf 已提前到 plansByCode 之前定义）
   {
     const tp = plansY.filter(p => !p.dead && wusdOf(p) > 0);
     const tot = sum(tp, p => wusdOf(p) * 10000 * fx);
@@ -1976,6 +1985,9 @@ function calc() {
   if (snap) {
     const logs = {};
     state.grantLogs.filter(g => inYear(g.date, Y)).forEach(g => { if (g.code) logs[g.code] = (logs[g.code] || 0) + (g.amountCny || 0); });
+    const gImp = {};   // 平台导出的授予流水（数据集里的预算授予文件）：本年度授予合计，有它时以它为准
+    Object.values((state.grantData || {}).byProject || {}).forEach(g => (g.rows || []).forEach(r => { if (!/以前年度/.test(r.note)) gImp[r.code] = (gImp[r.code] || 0) + (r.total || r.itw + r.od); }));
+    codes.forEach(c => { if (gImp[c] != null) logs[c] = gImp[c]; });
     codes.forEach(c => {
       const b = snap.rows[c].itw.granted || 0;
       if (logs[c] != null && Math.abs(logs[c] - b) > Math.max(1000, b * 0.02)) grantChecks.push({ code: c, name: snap.rows[c].name, logSum: logs[c], granted: b });
@@ -2880,10 +2892,12 @@ function renderData() {
     team.map(g => '<tr><td><b>' + esc(g.name) + '</b></td><td><span class="st st-' + (g.kind === 'po' ? 'open' : 'accepted') + '">' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</span></td><td class="num">' + (g.headcount || 0) + '</td><td class="num">' + fmtCny(g.rate || 0) + '</td><td>' + (g.kind === 'po' ? (g.poGroup ? '<b>' + esc(g.poGroup) + '</b>' : '<span class="muted">未标</span>') : '<span class="muted">—</span>') + '</td></tr>').join('') + '</tbody></table>' +
     (anyOwn && team.some(g => g.kind === 'po' && !g.poGroup && (g.headcount || 0) > 0) ? '<div class="cons-diff info">ℹ️ 有 PO 人员没标归属，他们会并成"未标归属"的一张。在团队 Excel 的 PO 页签加一列「PO归属」（值随意，如 PO甲 / PO乙），或单独一个页签名含「归属」的清单（姓名 + 归属）。</div>' : (!anyOwn ? '<div class="muted" style="margin-top:6px">想按人员归属把 PO 分成几张下：在团队 Excel 的 PO 页签加一列「PO归属」（值随意，如 PO甲 / PO乙），或单独一个页签名含「归属」的清单（姓名 + 归属两列）。</div>' : '')) : '') + calib + planHtml2;
 
+  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });   // 多条规划对应同一个系统预算项
   const pw = $('#planTableWrap');
   pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项。</div>' :
     '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标%</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5" title="已失效：预算下不来，不计入执行率分母"' : '') + '><td>' + (p.dead ? '<span class="st st-pending">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b></td>' +
+    c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5" title="已失效：预算下不来，不计入执行率分母"' : '') + '><td>' + (p.dead ? '<span class="st st-pending">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b>' +
+      ((share[p.code] || []).length > 1 ? ' <span class="muted" title="多条规划对应系统里的同一个预算项：金额相加、目标按金额加权，执行率按合并项看">与「' + esc(share[p.code].filter(q => q.id !== p.id).map(q => q.name).join('、')) + '」共用系统预算项</span>' : '') + '</td>' +
       '<td><input data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px"></td>' +
       '<td class="num"><input data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
       '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
@@ -2898,6 +2912,33 @@ function renderData() {
     '<table class="tbl"><thead><tr><th>日期</th><th>预算来源</th><th class="num">金额(CNY)</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
     logs.map(g => '<tr><td>' + esc(g.date) + '</td><td>' + esc(g.code) + '</td><td class="num">' + fmtCny(g.amountCny) + '</td><td>' + esc(g.note || '') + '</td>' +
       '<td style="white-space:nowrap"><button class="btn small" data-action="grant:edit" data-id="' + esc(g.date) + '">编辑</button> <button class="btn small danger" data-action="grant:del" data-id="' + esc(g.date) + '">删除</button></td></tr>').join('') + '</tbody></table>';
+  // 平台导出的授予流水（数据集里的预算授予文件）。多条规划对应系统里一个预算项时，每笔授予可以标注归哪条规划——
+  // 授予邮件里写着规划归属，按它人工判断；平台数据分不出每条规划的执行，所以执行率只按系统里的预算项看，授予可以按规划看
+  {
+    const gRows = [];
+    Object.entries((state.grantData || {}).byProject || {}).forEach(([pk, g]) => (g.rows || []).forEach(r => gRows.push(Object.assign({ proj: pk }, r))));
+    if (gRows.length) {
+      const attr = state.grantAttr || {}, Y = c.Y;
+      const merged = c.codes.filter(code => c.per[code].plan && c.per[code].plan.merged);
+      const plansOf = code => (c.per[code].plan && c.per[code].plan.plans) || [];
+      const rowHtml = gRows.filter(r => merged.indexOf(r.code) >= 0).map(r => {
+        const key = r.docNo + '|' + r.code, cur = attr[key] || '';
+        return '<tr><td>' + esc(r.name || r.code) + '</td><td class="muted">' + esc(r.docNo) + '</td><td class="muted">' + esc(r.by) + '</td><td class="num">' + fmtCny(r.itw) + '</td><td class="num">' + fmtCny(r.od) + '</td><td class="muted">' + esc(r.note) + '</td>' +
+          '<td><select data-grantattr="' + esc(key) + '"' + (/以前年度/.test(r.note) ? ' disabled' : '') + '><option value="">未归属</option>' + plansOf(r.code).map(p => '<option value="' + esc(p.id) + '"' + (cur === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') + '</select></td></tr>';
+      }).join('');
+      const sumHtml = merged.map(code => {
+        const rs = gRows.filter(r => r.code === code && !/以前年度/.test(r.note));
+        return '<div style="margin-top:6px"><b>' + esc(c.per[code].name) + '</b>（系统预算项，本年度授予 ' + fmtCny(sum(rs, r => r.total || r.itw + r.od)) + '）' + plansOf(code).map(p => {
+          const got = sum(rs.filter(r => attr[r.docNo + '|' + r.code] === p.id), r => r.total || r.itw + r.od);
+          return '<div class="muted" style="padding-left:12px">规划「' + esc(p.name) + '」：已归属 ' + fmtCny(got) + ' / 规划 ' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</div>';
+        }).join('') + (rs.some(r => !attr[r.docNo + '|' + r.code]) ? '<div class="muted" style="padding-left:12px;color:var(--amber)">未归属 ' + fmtCny(sum(rs.filter(r => !attr[r.docNo + '|' + r.code]), r => r.total || r.itw + r.od)) + '</div>' : '') + '</div>';
+      }).join('');
+      gw.insertAdjacentHTML('beforeend',
+        '<div style="margin-top:12px"><b style="font-size:13px">平台导出的授予流水</b> <span class="muted">共 ' + gRows.length + ' 行（数据集里的预算授予文件，自动导入）</span>' +
+        (merged.length ? sumHtml + '<div class="tbl-wrap" style="margin-top:6px"><table class="tbl"><thead><tr><th>系统预算项</th><th>授予单号</th><th>授予人</th><th class="num">IT外包</th><th class="num">OD</th><th>备注</th><th>归哪条规划</th></tr></thead><tbody>' + rowHtml + '</tbody></table></div><div class="muted" style="margin-top:4px">多条规划对应同一个系统预算项：按授予邮件里的规划归属，给每一笔选一下归哪条规划。执行率只按系统预算项看。</div>' : '<div class="muted">目前没有"多条规划对应一个预算项"的来源，不需要标注。</div>') +
+        '</div>');
+    }
+  }
 
   // 工作日历
   let wdHtml = '<div class="wd-grid">';
@@ -3064,7 +3105,7 @@ function buildSharePkg(includePo, includeTeam) {
       schemaVersion: 4,
       meta: state.meta, years: state.years, plans: state.plans,
       team: includeTeam ? state.team : [],
-      grantLogs: state.grantLogs, execSnaps: state.execSnaps, projAlias: state.projAlias, grantData: state.grantData, changeLog: state.changeLog, lastImportAt: state.lastImportAt,
+      grantLogs: state.grantLogs, execSnaps: state.execSnaps, projAlias: state.projAlias, grantData: state.grantData, grantAttr: state.grantAttr, changeLog: state.changeLog, lastImportAt: state.lastImportAt,
       poDataByYear: includePo ? state.poDataByYear : {},
       updatedAt: state.updatedAt
     }
@@ -3122,7 +3163,7 @@ function exportModal() {
 function doExport(kind) {
   let obj, name;
   if (kind === 'config') { obj = { type: 'budget-dash-config', schemaVersion: 4, meta: state.meta, years: state.years, plans: state.plans, team: state.team, projAlias: state.projAlias }; name = '预算看板-配置'; }
-  else if (kind === 'data') { obj = { type: 'budget-dash-data', schemaVersion: 4, execSnaps: state.execSnaps, poDataByYear: state.poDataByYear, grantLogs: state.grantLogs, grantData: state.grantData, changeLog: state.changeLog, lastImportAt: state.lastImportAt, importLogs: state.importLogs, projPrints: state.projPrints, projAlias: state.projAlias }; name = '预算看板-数据'; }
+  else if (kind === 'data') { obj = { type: 'budget-dash-data', schemaVersion: 4, execSnaps: state.execSnaps, poDataByYear: state.poDataByYear, grantLogs: state.grantLogs, grantData: state.grantData, grantAttr: state.grantAttr, changeLog: state.changeLog, lastImportAt: state.lastImportAt, importLogs: state.importLogs, projPrints: state.projPrints, projAlias: state.projAlias }; name = '预算看板-数据'; }
   else { obj = { type: 'budget-dash-full', ...state }; name = '预算看板-全量'; }
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -3147,7 +3188,7 @@ function linkModal() {
     const s = c.per[code];
     const cur = s.plan;
     return '<tr><td><b>' + esc(s.name) + '</b> [' + esc(code) + ']</td>' +
-      '<td>' + (cur ? '✓ 已关联「' + esc(cur.name) + '」' :
+      '<td>' + (cur ? '✓ 已关联「' + esc(cur.name) + '」' + (unlinked.length ? ' <select data-linkadd="' + esc(code) + '"><option value="">＋ 再关联一条规划（多对一）</option>' + unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtWusd(wusdOf(p)) + 'W$</option>').join('') + '</select>' : '') :
         '<select data-linkcode="' + esc(code) + '"><option value="">— 选择规划项 —</option>' +
         unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtWusd(wusdOf(p)) + 'W$</option>').join('') +
         '<option value="__new__">＋ 新建规划项</option></select>') + '</td></tr>';
@@ -3527,6 +3568,18 @@ document.addEventListener('change', e => {
     renderNow(); renderBudget(); renderPO(); renderData();
     return;
   }
+  if (e.target.matches('[data-grantattr]')) {   // 授予流水里这一笔归哪条规划（多条规划对应一个系统预算项时用；按授予邮件里的规划归属人工判断）
+    const key = e.target.dataset.grantattr, v = e.target.value;
+    state.grantAttr = state.grantAttr || {};
+    if (v) state.grantAttr[key] = v; else delete state.grantAttr[key];
+    save();
+    return;
+  }
+  if (e.target.matches('[data-linkadd]')) {   // 已关联的编码再关联一条规划（多对一）
+    const p = state.plans.find(x => x.id === e.target.value);
+    if (p) { p.code = e.target.dataset.linkadd; touch('plan'); save(); linkModal(); }
+    return;
+  }
   if (e.target.matches('[data-linkcode]')) {
     const code = e.target.dataset.linkcode, v = e.target.value;
     if (v === '__new__') {
@@ -3558,7 +3611,7 @@ document.addEventListener('change', e => {
           save(); alert('配置已恢复');
         } else if (obj.type === 'budget-dash-data') {
           if (!confirm('恢复数据包：将覆盖执行表快照、PO明细和授予流水（不影响配置），确认？')) return;
-          state.execSnaps = obj.execSnaps || []; state.poDataByYear = obj.poDataByYear || {}; state.grantLogs = obj.grantLogs || []; if (obj.grantData) state.grantData = obj.grantData; if (obj.changeLog) state.changeLog = obj.changeLog; if (obj.lastImportAt) state.lastImportAt = obj.lastImportAt; state.changes = null;
+          state.execSnaps = obj.execSnaps || []; state.poDataByYear = obj.poDataByYear || {}; state.grantLogs = obj.grantLogs || []; if (obj.grantData) state.grantData = obj.grantData; state.grantAttr = obj.grantAttr || {}; if (obj.changeLog) state.changeLog = obj.changeLog; if (obj.lastImportAt) state.lastImportAt = obj.lastImportAt; state.changes = null;
           if (obj.importLogs) state.importLogs = obj.importLogs; if (obj.projPrints) state.projPrints = obj.projPrints; if (obj.projAlias) state.projAlias = obj.projAlias;
           save(); alert('数据已恢复');
         } else {
