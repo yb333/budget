@@ -127,6 +127,94 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .po-charts{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
 .po-chart-title{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:2px}
 @media(max-width:1100px){.po-charts{grid-template-columns:1fr}}
+/* ===== 首页：待办 / 执行率 / 提醒 ===== */
+.hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;margin-top:16px}
+.hero .card{margin-top:0}
+@media(max-width:1100px){.hero{grid-template-columns:1fr}}
+#tab-now.no-data .hero,#tab-now.no-data #poDecisionCard,#tab-now.no-data #srcCard,#tab-now.no-data #foldCard{display:none}
+.lnk{color:var(--blue);cursor:pointer;font-size:12px;white-space:nowrap}
+.lnk:hover{text-decoration:underline}
+.sub{font-size:11px;color:var(--muted);font-weight:400;line-height:1.5}
+.c-green{color:var(--green)} .c-red{color:var(--red)} .c-amber{color:var(--amber)} .c-blue{color:var(--blue)}
+.todo{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line)}
+.todo-body[title]{cursor:help}
+.todo:last-child{border-bottom:none}
+.todo-dot{flex-shrink:0;width:9px;height:9px;border-radius:50%;margin-top:7px;background:var(--blue)}
+.todo.amber .todo-dot{background:var(--amber)} .todo.red .todo-dot{background:var(--red)}
+.todo-due{flex-shrink:0;width:80px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;padding-top:3px}
+.todo-body{flex:1;min-width:0}
+.todo-title{font-size:14px;line-height:1.5}
+.todo-amt{font-size:15px;font-weight:700;margin-left:4px;font-variant-numeric:tabular-nums}
+.todo-note{font-size:12px;color:var(--muted);margin-top:2px;line-height:1.6}
+.todo-x{flex-shrink:0;white-space:nowrap;padding-top:2px}
+.todo.done .todo-body{opacity:.5}
+.todo.done .todo-title{text-decoration:line-through}
+.gauge-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.g-num .lab{font-size:12px;color:var(--muted)}
+.g-num .val{font-size:26px;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums}
+.gbar{position:relative;height:16px;background:#edf0f7;border-radius:8px;margin:12px 0 6px}
+.gbar .fill{height:100%;border-radius:8px;background:var(--blue);transition:width .3s}
+.gbar .fill.f-green{background:var(--green)} .gbar .fill.f-red{background:var(--red)}
+.gbar .mk{top:-4px;bottom:-4px}
+.gbar .mk.fore{top:-7px;bottom:-7px}
+.gbar-legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11px;color:var(--muted)}
+.gbar-legend i{display:inline-block;vertical-align:middle;margin-right:4px}
+.lg-fill{width:12px;height:8px;border-radius:2px;background:var(--blue)}
+.lg-mk{width:0;height:10px;border-left:2px solid var(--green)}
+.lg-time{width:0;height:10px;border-left:2px dashed var(--amber)}
+.lg-fore{width:0;height:12px;border-left:3px solid var(--purple)}
+.hit-line{margin-top:8px;font-size:13px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.stat{border:1px solid var(--line);border-radius:8px;padding:6px 9px;min-width:0}
+.stat .lab{font-size:11px;color:var(--muted)}
+.stat .val{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .sub{font-size:11px;color:var(--muted);line-height:1.45}
+.notes-title{margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12px;font-weight:600;color:var(--muted)}
+.note{display:flex;gap:8px;padding:5px 0;font-size:12.5px;line-height:1.55;align-items:flex-start}
+.note i{flex-shrink:0;width:16px;height:16px;border-radius:50%;font-style:normal;color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;margin-top:2px}
+.note.red i{background:var(--red)} .note.amber i{background:var(--amber)} .note.info i{background:var(--gray)} .note.ok i{background:var(--green)}
+/* 本次导入发现了什么：一条细栏，明细点开才浮出来 */
+.strip{background:#fff;border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:10px;padding:7px 14px;margin-top:12px;font-size:13px;line-height:1.7}
+.inline-fold{display:inline-block;position:relative;margin-left:10px}
+.inline-fold>summary{display:inline;list-style:none;cursor:pointer;color:var(--blue);font-size:12px}
+.inline-fold>summary::-webkit-details-marker{display:none}
+.inline-fold-body{position:absolute;left:0;top:calc(100% + 6px);z-index:40;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.14);padding:8px 14px;min-width:340px;max-width:720px;line-height:1.8;cursor:default}
+/* 本周期操作：下 PO 的比例表、OD、年底资金安排 */
+.ins-head .big{font-size:19px;margin-left:4px}
+.ins-sub.warn{color:var(--amber)} .ins-sub.bad{color:var(--red)} .ins-sub.muted{color:var(--muted)} .ins-sub.plan-ahead{color:var(--purple)}
+.ins-sub.identify{margin-top:10px}
+.flag{color:var(--amber);font-size:12px}
+.issued{display:inline-block;margin-right:8px}
+.po-part{margin-top:10px}
+.po-part-head{display:flex;align-items:baseline;gap:10px;font-size:14px;flex-wrap:wrap}
+.po-amt{font-size:17px;font-weight:700;color:var(--blue)}
+.tbl-po{margin-top:4px;max-width:980px}
+.tbl-po td.po-proj{border-right:1px solid var(--line);vertical-align:top;background:#fafbfe}
+.tbl-po tr.first td{border-top:2px solid var(--line)}
+.tbl-od{max-width:1000px}
+.tbl-od tr.cur td{background:var(--blue-bg)}
+.fold.sec{border:1px solid var(--line);border-radius:10px;padding:7px 14px;background:#fbfcff}
+.fold.sec>summary{list-style:none;font-size:14px;color:var(--text);font-weight:600}
+.fold.sec>summary::-webkit-details-marker{display:none}
+.fold.sec>summary::before{content:'▸ ';color:var(--blue)}
+.fold.sec[open]>summary::before{content:'▾ '}
+.fold.sec[open]{padding-bottom:8px}
+/* 来源健康度 */
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
+.t-red{background:var(--red-bg);color:var(--red)} .t-amber{background:var(--amber-bg);color:var(--amber)} .t-green{background:var(--green-bg);color:var(--green)} .t-gray{background:#eef0f5;color:var(--muted)}
+.tbl-health{max-width:1180px}
+.tbl-health td.src{min-width:180px}
+.tbl-health td.bar-cell{min-width:150px;width:190px}
+.mini-bar{position:relative;height:12px;background:#edf0f7;border-radius:6px}
+.mini-bar .fill{height:100%;border-radius:6px;background:var(--blue)}
+.mini-bar .mk{top:-3px;bottom:-3px}
+.mini-bar .mk.fore{top:-5px;bottom:-5px}
+.mk.fore{border-left:3px solid var(--purple)}
+.mk.fore.f-green{border-color:var(--green)} .mk.fore.f-amber{border-color:var(--amber)} .mk.fore.f-red{border-color:var(--red)}
+.tbl-health tr.ok{display:none} .tbl-health.open tr.ok{display:table-row}
+.tbl-health tr.fold-row td{color:var(--blue);cursor:pointer;font-size:12px;padding:5px 8px}
+.bad{color:var(--red)}
+#opsPo,#opsOd,#opsYear,#opsSim,#srcCard,#foldChecks,#foldMonth,#teamCard{scroll-margin-top:112px}
 /* 分享只读模式：隐藏所有操作按钮与数据管理页 */
 body.share [data-action]{display:none!important}
 body.share #tabNav button[data-tab="data"]{display:none}
@@ -160,36 +248,21 @@ body.share #tabNav button[data-tab="data"]{display:none}
   <section id="tab-now" class="tab-panel active">
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
-    <div id="importChanges"></div>
     <div id="newYearBox"></div>
-    <div class="card">
-      <div class="card-title">① 进展 <span class="card-sub">执行率分母 = 年初规划 × 汇率 · 考核线 = 各来源自己的目标 · 总体目标 = 按规划加权</span></div>
-      <div id="nowProgress"></div>
-    </div>
-    <div class="card">
-      <div class="card-title">② 风险 <span class="card-sub">红=需尽快处理 · 黄=关注 · 灰=口径说明</span></div>
-      <div id="nowRisk"></div>
+    <div id="importChanges"></div>
+    <div class="hero">
+      <div class="card"><div class="card-title">本期待办 <span class="card-sub" id="todoSub"></span></div><div id="nowTodo"></div></div>
+      <div class="card"><div class="card-title">执行率 <span class="card-sub">年底考核 · 从现在推到 12 月 31 日</span></div><div id="nowRate"></div></div>
     </div>
     <div class="card" id="poDecisionCard" style="border-left:4px solid var(--blue)">
-      <div class="card-title">Ⓣ 本周期操作与决策 <span class="card-sub" id="poDecisionSub"></span></div>
+      <div class="card-title">本周期操作 <span class="card-sub" id="poDecisionSub"></span></div>
       <div id="poDecisionBox"></div>
     </div>
-    <div class="card">
-      <div class="card-title">③ 本周期行动清单 <span class="card-sub">按优先级排序 · 完成可勾选（当月有效）</span></div>
-      <div id="nowActions"></div>
+    <div class="card" id="srcCard">
+      <div class="card-title">来源健康度 <span class="card-sub">有问题的排在前面、直接展开；达标和不考核的折在下面</span></div>
+      <div id="srcHealth"></div>
     </div>
-    <div class="grid-2">
-      <div class="card"><div class="card-title">月度消耗节奏 <span class="card-sub">PO/OD 实际 + 预测 vs 平均节奏</span></div><div class="chart-box"><canvas id="monthlyChart"></canvas></div><div class="muted" id="chartHint" style="margin-top:6px"></div></div>
-      <div class="card"><div class="card-title">执行率明细 <span class="card-sub">目标线 + 时间进度线</span></div><div id="execRates"></div></div>
-    </div>
-    <div class="grid-2">
-      <div class="card"><div class="card-title">授予进度与资金水位 <span class="card-sub">催 BA 依据</span></div><div id="grantPanel"></div></div>
-      <div class="card"><div class="card-title">数据校验 <span class="card-sub">PO明细 vs 执行表 · 授予流水 vs 执行表</span></div><div id="consistency"></div></div>
-    </div>
-    <div class="card">
-      <div class="card-title">建议 vs 实际 <span class="card-sub">每次导入自动记一份建议，下次导入后用实际数回测</span></div>
-      <div class="tbl-wrap" id="backtestBox"></div>
-    </div>
+    <div class="card" id="foldCard"><div id="nowFolds"></div></div>
   </section>
   <section id="tab-budget" class="tab-panel">
     <div class="card">
@@ -217,7 +290,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
       <div class="card"><div class="card-title">基础参数 <span class="card-sub">汇率/目标/年终奖/出勤/更新频率</span></div><div id="metaForm"></div></div>
       <div class="card"><div class="card-title">数据管理 <span class="card-sub">分层备份：配置与数据可分开迁移</span></div><div id="dataMgmt"></div></div>
     </div>
-    <div class="card">
+    <div class="card" id="teamCard">
       <div class="card-title">团队配置（只读，来源=你的Excel） <span class="btn-row"><button class="btn" data-action="team:paste">📥 从Excel导入</button></span></div>
       <div class="muted" style="margin-bottom:8px">按组维护（如「高级开发×3·日单价2200」）；PO 组按<b>日单价×当月工作日</b>、OD 组按<b>月单价</b>计。人数变化时更新即可，看板自动校准理论值与历史实际的偏差。</div>
       <div class="tbl-wrap" id="teamTableWrap"></div>
