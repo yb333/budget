@@ -215,6 +215,20 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .tbl-health tr.fold-row td{color:var(--blue);cursor:pointer;font-size:12px;padding:5px 8px}
 .bad{color:var(--red)}
 #opsPo,#opsOd,#opsYear,#opsSim,#srcCard,#foldChecks,#foldMonth,#teamCard{scroll-margin-top:112px}
+/* ===== 预算来源页 / PO 台账 ===== */
+.sec-title{font-size:14px;font-weight:600;margin:18px 0 6px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}
+.tbl-health.full{max-width:none}
+.sum-line{margin-bottom:10px;line-height:2}
+.tbl-wallet{font-size:12.5px}
+.tbl-wallet tr.sub-total td{background:#fafbfe;font-weight:600}
+.btn.ghost{border-color:transparent;color:var(--muted)}
+.btn.ghost:hover{border-color:var(--line);background:var(--red-bg);color:var(--red)}
+td.ops{white-space:nowrap;text-align:right}
+.paste-preview{overflow-x:auto;margin:4px 0}
+.paste-preview table{width:100%;border-collapse:collapse;font-size:12px}
+.paste-preview th,.paste-preview td{padding:3px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+.paste-preview th{color:var(--muted);font-weight:500}
+.paste-preview td.num{text-align:right}
 /* 分享只读模式：隐藏所有操作按钮与数据管理页 */
 body.share [data-action]{display:none!important}
 body.share #tabNav button[data-tab="data"]{display:none}
@@ -282,7 +296,7 @@ body.share #tabNav button[data-tab="data"]{display:none}
     </div>
     <div class="grid-2">
       <div class="card"><div class="card-title">在途与返还 <span class="card-sub">验收后多少钱、从哪张 PO 回到哪个钱包</span></div><div id="poFrozenWrap"></div></div>
-      <div class="card"><div class="card-title">下月 PO 与 OD 建议 <span class="card-sub" id="poAdviceSub"></span></div><div id="poAdviceWrap"></div></div>
+      <div class="card"><div class="card-title">多下率 <span class="card-sub">下了多少 vs 实际执行 · 连续偏大说明习惯性多下</span></div><div id="poOverWrap"></div></div>
     </div>
   </section>
   <section id="tab-data" class="tab-panel">
