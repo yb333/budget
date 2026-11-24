@@ -135,12 +135,11 @@ let state = null;
 let charts = {};
 const foldOpen = {};                           // 各折叠块的展开状态（按 id 记，重渲染时保留）
 let chartTodo = {};                             // 折叠块里等着画的图（展开时才画：foldPoCharts / foldMonth）
-let SHARE_MODE = false, SHARE_PKG = null;   // 分享只读模式（服务目录存在 data.json 时启用）
 let fileHandle = null;                       // 数据文件句柄（File System Access，会话内记忆）
 let fileConnected = false;                   // budget.json 写穿连接状态（断连时数据仅存浏览器缓存，重连即同步）
 let fileWriteTimer = null, fileWriting = false;
 async function writeThroughNow() {           // 立即把当前状态写入 budget.json（原子写：临时文件+提交）
-  if (SHARE_MODE || !fileHandle) return true;
+  if (!fileHandle) return true;
   if (fileWriting) return false;
   fileWriting = true;
   try {
@@ -156,7 +155,7 @@ async function writeThroughNow() {           // 立即把当前状态写入 budg
   finally { fileWriting = false; }
 }
 function scheduleFileWrite() {               // 防抖 800ms 写穿；断连时静默（数据仍在 localStorage 缓存，重连后下一次写入同步）
-  if (SHARE_MODE || !fileHandle) return;
+  if (!fileHandle) return;
   clearTimeout(fileWriteTimer);
   fileWriteTimer = setTimeout(writeThroughNow, 800);
 }
@@ -595,12 +594,6 @@ function load() {
       saveSilent();
     }
   };
-  if (SHARE_MODE) {           // 分享模式：只读快照，不读写本机存储
-    state = upToV4(SHARE_PKG.state) || defaultState();
-    normalizePlans(state);
-    normalizeTeam(state);
-    return;
-  }
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
@@ -616,7 +609,7 @@ function load() {
   } catch (e) { state = defaultState(); }
 }
 function saveSilent() { localStorage.setItem(LS_KEY, JSON.stringify(state)); scheduleFileWrite(); }
-function save() { if (SHARE_MODE) { renderAll(); return; } localStorage.setItem(LS_KEY, JSON.stringify(state)); try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { } renderAll(); }
+function save() { localStorage.setItem(LS_KEY, JSON.stringify(state)); try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { } renderAll(); }
 function touch(key) { (state.updatedAt = state.updatedAt || {})[key] = todayStr(); }
 
 /* ================= 文件解析 ================= */
@@ -2032,32 +2025,30 @@ function rateColor(rate, timeProg, target, forecast) {
 }
 function renderBanner() {
   const el = $('#freshnessBanner');
-  if (SHARE_MODE) { el.className = 'banner ok'; el.innerHTML = '🔗 分享只读模式 · 数据截至 <b>' + esc(SHARE_PKG.exportedAt) + '</b> · 如需更新请联系维护人重新发布'; return; }
-  const freq = state.meta.updateFreqDays || 14, t = todayStr();
-  const defs = [['po', 'PO明细'], ['exec', '执行表'], ['team', '团队配置'], ['plan', '规划'], ['grants', '授予流水']];
+  const freq = state.meta.updateFreqDays || 14, t = todayStr(), Y = curYear();
+  const hasAny = state.execSnaps.length || Object.keys(state.poDataByYear || {}).length;
+  if (!hasAny && !state.plans.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 还没有任何数据：先到「数据管理」录入年初规划，再把平台导出的文件放进数据集文件夹'; $('#yearBadge').textContent = Y + ' 年度'; return; }
+  // 只看平台数据新不新（PO 明细、执行表）；规划、团队配置不按天数催
   const chips = [];
-  defs.forEach(([k, label]) => {
+  [['po', 'PO 明细'], ['exec', '执行表']].forEach(([k, label]) => {
+    const has = k === 'po' ? !!poOf(Y) : state.execSnaps.some(s => inYear(s.date, Y));
+    if (!has) { if (Y === new Date().getFullYear()) chips.push(label + '：今年还没导入'); return; }   // 往年、还没开始的年度不催
     const d = (state.updatedAt || {})[k];
-    if (k === 'po' && !poOf(curYear())) { chips.push(label + '：从未导入'); return; }
-    if (k === 'exec' && !state.execSnaps.some(s => inYear(s.date, curYear()))) { chips.push(label + '：从未导入'); return; }
-    if (!d && (k === 'po' || k === 'exec')) return;
-    if (!d) { if (k === 'plan' && state.plans.length) chips.push(label + '：未记录'); if (k === 'grants' && state.grantLogs.length) chips.push(label + '：未记录'); return; }
-    const days = daysBetween(d, t);
-    if (days != null && days > freq) chips.push(label + '：' + days + ' 天前');
+    const days = d ? daysBetween(d, t) : null;
+    if (days == null || days > freq) chips.push(label + '：' + (days == null ? '没记录导入时间' : days + ' 天没更新'));
   });
-  const hasData = state.execSnaps.length || state.poData;
-  if (!hasData && !state.plans.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 尚未录入任何数据：先在「数据管理」录规划，再导入平台 4 文件'; return; }
   let fileChip = '';
   if (fileHandle && !fileConnected) fileChip = '<span class="chip" style="border-color:var(--red);color:var(--red)">💾 数据文件未连接</span>';
   else if (fileHandle && fileConnected) fileChip = '<span class="chip">💾 budget.json 已连接</span>';
   if (fileHandle && !fileConnected) {
     el.className = 'banner warn';
     el.innerHTML = '⚠️ <b>数据文件未连接</b>：数据暂存浏览器缓存（不丢），点上方「📂 载入数据文件」重连一次即恢复自动同步。' + (chips.length ? '<br>数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') : '');
+    $('#yearBadge').textContent = Y + ' 年度';
     return;
   }
   if (chips.length) { el.className = 'banner warn'; el.innerHTML = '⚠️ 数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') + fileChip; }
-  else { el.className = 'banner ok'; el.innerHTML = '✓ 各数据源 ' + freq + ' 天内均已更新' + fileChip; }
-  $('#yearBadge').textContent = state.meta.year + ' 年度';
+  else { el.className = 'banner ok'; el.innerHTML = '✓ 平台数据 ' + freq + ' 天内已更新' + fileChip; }
+  $('#yearBadge').textContent = Y + ' 年度';
 }
 
 /* ================= 渲染：现在与行动（首页） =================
@@ -2957,62 +2948,118 @@ function recordImportLog(c) {
 }
 
 /* ================= 渲染：数据管理 ================= */
+// 数据从哪来、存在哪、新不新（状态面板）→ 年初规划 → 团队与需求测算、参数 → 决策设置（锚定、剔除）→ 授予流水
+let paramSavedAt = 0;
+const smallBtn = (action, txt, cls, extra) => '<button class="btn small ' + (cls || '') + '" data-action="' + action + '"' + (extra || '') + '>' + txt + '</button>';
+// 参数改完自动保存（和规划表一样）。在原有年度参数上改这几项：剔除名单、OD 锚定项目等其他设置要留着
+function saveParams() {
+  const tg = parseFloat($('#meta-target').value), fx = parseFloat($('#meta-fx').value), bo = parseFloat($('#meta-bonus').value), fq = parseInt($('#meta-freq').value, 10), at = parseFloat($('#meta-attend').value);
+  let msg = '';
+  if (!(tg >= 50 && tg <= 100)) msg = '默认执行率目标应在 50~100';
+  else if (!(fx > 0 && fx < 20)) msg = '汇率无效';
+  else if (!(bo >= 0 && bo <= 12)) msg = '年终奖扣减应在 0~12 个月';
+  else if (!(fq >= 1 && fq <= 60)) msg = '更新提醒应在 1~60 天';
+  else if (!Number.isFinite(at) || at < 0.5 || at > 1.5) msg = '出勤系数应在 0.5~1.5';
+  if (msg) { alert(msg + '，已恢复成原来的值'); renderAll(); return false; }
+  const yp = yearParams(curYear());
+  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' });
+  state.meta.updateFreqDays = fq;
+  paramSavedAt = Date.now();
+  save();
+  return true;
+}
 function renderData() {
-  const Y = curYear(), m = yearParams(Y), c = calc();
-  $('#metaForm').innerHTML =
-    '<div class="muted" style="margin-bottom:8px">以下参数属于 <b>' + Y + ' 年度</b>（汇率/目标/年终奖/出勤每年独立；更新频率为全局）。用顶栏 ◀▶ 切换年度。</div>' +
-    '<div class="form-grid">' +
-    '<label class="field"><span class="field-label">执行率目标（%）</span><input id="meta-target" type="number" min="50" max="100" step="0.5" value="' + (m.execRateTarget * 100) + '"></label>' +
-    '<label class="field"><span class="field-label">汇率（规划USD→CNY）</span><input id="meta-fx" type="number" step="0.01" value="' + m.fxRate + '"></label>' +
-    '<label class="field"><span class="field-label">12月年终奖扣减（月均倍数）</span><input id="meta-bonus" type="number" step="0.5" value="' + m.bonusMonths + '"></label>' +
-    '<label class="field"><span class="field-label">出勤系数（PO预测用，1=满勤）</span><input id="meta-attend" type="number" step="0.05" min="0.5" max="1.5" value="' + (m.attendFactor != null ? m.attendFactor : 1) + '"></label>' +
-    '<label class="field"><span class="field-label">数据更新频率（天，全局）</span><input id="meta-freq" type="number" min="1" max="60" value="' + (state.meta.updateFreqDays || 14) + '"></label>' +
-    '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="meta:save">保存参数</button></div>';
+  const Y = curYear(), m = yearParams(Y), c = calc(), d = c.poDecision;
+  const row = (icon, cls, name, stateHtml, hint, btns) => '<div class="st-row ' + cls + '"><span class="st-ico">' + icon + '</span><div class="st-main"><div class="st-name">' + name + '<span class="st-dot"></span><span class="st-state">' + stateHtml + '</span></div>' + (hint ? '<div class="st-hint">' + hint + '</div>' : '') + '</div><div class="st-btns">' + (btns || '') + '</div></div>';
 
+  /* ---- 数据与文件：状态面板 ---- */
+  const freq = state.meta.updateFreqDays || 14, t = todayStr();
+  const upd = k => { const dd = (state.updatedAt || {})[k]; if (!dd) return { txt: '<span class="bad">还没导入</span>', stale: true }; const days = daysBetween(dd, t); return { txt: esc(dd) + (days > freq ? ' <span class="bad">（' + days + ' 天前）</span>' : ''), stale: days > freq }; };
+  const gUpd = Object.values((state.grantData || {}).byProject || {}).map(g => g.updatedAt || '').sort().pop() || '';
+  const pvNeed = parseVerNeed().filter(parseKindHasData);
+  const pvNames = pvNeed.map(k => PARSE_NAME[k]).join('、');
+  const pvNoFile = pvNeed.length > 0 && pvNeed.every(k => (state.parseVerNoFile || []).indexOf(k) >= 0);   // 数据集文件夹里没有这类文件（以前是手动导入的）
+  const canReread = !!(dirHandle && !pvNoFile);
+  const dataStale = upd('po').stale || upd('exec').stale;
   $('#dataMgmt').innerHTML =
-    '<div class="btn-row">' +
-    '<button class="btn primary" data-action="import:open">📥 导入平台数据</button>' +
-    '<button class="btn primary" data-action="data:saveFile">💾 保存到数据文件</button>' +
-    '<button class="btn" data-action="data:openFile">📂 打开/恢复数据文件</button>' +
-    '<button class="btn" data-action="dataset:scan">📁 扫描数据集</button>' +
-    '<button class="btn" data-action="dataset:rescan" title="看板更新后，把数据集文件夹里的文件按当前规则全部重读一遍（文件不用重新导出）">🔄 按当前规则重读</button>' +
-    '<button class="btn" data-action="dataset:set">⚙️ 设置数据集文件夹</button>' +
-    '<button class="btn" data-action="data:publish">📤 发布分享</button>' +
-    '<button class="btn" data-action="data:export">📦 分层备份</button>' +
+    row('💾', fileHandle ? (fileConnected ? 'ok' : 'warn') : 'none', '数据文件 budget.json',
+      fileHandle ? (fileConnected ? '已连接，每次改动自动写入' : '未连接——数据暂存浏览器缓存，不丢') : '还没设置',
+      '主数据存在仓库的 data/budget.json，随 git 走，清浏览器也不丢；浏览器里只是缓存。换电脑、换浏览器时 pull 后打开同一个文件即可。',
+      smallBtn('data:saveFile', fileHandle ? (fileConnected ? '立即写入一次' : '重新连接') : '选择数据文件', fileHandle ? '' : 'primary')) +
+    row('📁', dirHandle ? 'ok' : 'none', '数据集文件夹',
+      dirHandle ? '已连接' + (c.projects.length ? '：<b>' + c.projects.map(esc).join('、') + '</b>' : '') + (state.lastImportAt && inYear(state.lastImportAt, Y) ? '，上次导入 ' + esc(state.lastImportAt) : '') : '还没设置',
+      '每个花钱项目一个子文件夹（名字自己起，定后不改），该项目的执行表、PO 明细、预算授予都丢进去；团队 Excel 放根目录。打开看板自动扫描导入，重复的文件自动跳过。',
+      dirHandle ? smallBtn('dataset:scan', '扫描数据集', '', ' title="有新文件没自动导进来时点它"') + smallBtn('dataset:set', '更换文件夹') : smallBtn('dataset:set', '设置数据集文件夹', 'primary')) +
+    row('📥', dataStale ? 'warn' : 'ok', '平台数据',
+      'PO 明细 ' + upd('po').txt + '　·　执行表 ' + upd('exec').txt + '　·　预算授予 ' + (gUpd ? esc(gUpd) : '<span class="muted">还没导入</span>') + '　·　团队 ' + upd('team').txt,
+      '平时靠数据集自动导入。临时手动导入（拖文件）时，执行表和预算授予要填属于哪个花钱项目。',
+      smallBtn('import:open', '导入平台数据', dataStale ? 'primary' : '')) +
+    row('🔄', pvNeed.length ? 'warn' : 'ok', '解析规则',
+      pvNeed.length ? '要重读：<b>' + esc(pvNames) + '</b>' : '都是按最新规则读的',
+      pvNeed.length ? '看板更新了这些文件的读法，现在的数据还是按旧规则算的' + (canReread ? '——文件不用重新导出' : '——数据集文件夹里没有这类文件，要手动导入一次') : '看板更新了解析逻辑时，打开会自动把数据集里的文件重读一遍',
+      pvNeed.length ? (canReread ? smallBtn('dataset:scan', '重读数据集', 'primary') : smallBtn('import:open', '去导入', 'primary')) : smallBtn('dataset:rescan', '全部重读一遍', '', ' title="怀疑数据还是旧的时候用：只重读平台数据和团队配置，不影响规划、目标和参数"')) +
     '<input type="file" id="importFile" accept=".json,application/json" style="display:none">' +
-    '<button class="btn" data-action="data:demo">示例数据</button>' +
-    '<button class="btn danger" data-action="data:clear">清空</button></div>' +
-    '<div class="muted" style="margin-top:10px"><b>📁 数据集文件夹</b>：设置一次后，<b>每个花钱项目建一个子文件夹</b>（名字自己起，定后不改），该项目的「项目总览」和「PO 明细」都丢进去；<b>团队 Excel</b> 放根目录。打开看板<b>自动扫描导入</b>，不用任何操作（快照日期 = 文件导出时间，重复文件自动跳过）。执行表没有项目列，所以必须放进项目子文件夹，否则不导入。' +
-    (c.projects.length ? '　当前项目：' + c.projects.map(esc).join('、') + '。' : (c.hasProj ? '' : '　<span style="color:var(--amber)">本年的执行表还是合并存放的（旧版），把文件放进项目子文件夹重新导入后，决策建议就能区分花钱项目。</span>')) + '</div>' +
-    '<div class="muted" style="margin-top:10px"><b>持久化架构</b>：budget.json = 唯一真源（<b>选一次文件后每次变更自动写入</b>，随 git 同步，清浏览器不丢）；浏览器 localStorage 只是缓存（断网/断连时兜底，重连自动同步）。分层备份用于手动归档/迁移。当前 ' + Y + ' 年执行表快照 ' + c.snaps.length + ' 个。' + (fileHandle ? (fileConnected ? ' ✅ 数据文件已连接' : ' ⚠️ 数据文件未连接（点顶部📂重连）') : ' ⏸ 尚未设置数据文件（点上方💾选择 data/budget.json）') + '</div>' +
-    '<div class="btn-row" style="margin-top:8px"><button class="btn" data-action="year:start">🚀 开启新年度（复制本年规划与参数）</button></div>';
+    '<div class="grp"><span class="grp-lab">备份与迁移</span>' + smallBtn('data:openFile', '打开 / 恢复数据文件') + smallBtn('data:export', '分层备份') + '</div>' +
+    '<div class="grp"><span class="grp-lab">年度</span>' + smallBtn('year:start', '开启 ' + (Y + 1) + ' 年度', '', ' data-y="' + (Y + 1) + '"') + '<span class="muted">新规划下来后用：复制本年的规划和参数，再把金额改成新年的；看别的年度用顶上的 ◀ ▶</span></div>' +
+    '<details class="fold"><summary>维护：示例数据、清空</summary><div class="btn-row" style="margin-top:6px">' + smallBtn('data:demo', '加载示例数据（会覆盖当前数据）') + smallBtn('data:clear', '清空全部数据', 'danger') + '</div></details>';
 
-  // 规划金额疑似过小（旧版按万美金录入被迁移误除以1万）→ 修复入口
+  // 规划金额疑似过小（旧版按万美金录入被迁移误除以 1 万）→ 修复入口
   const plansAll = state.plans || [];
   const maxW = plansAll.length ? Math.max(...plansAll.map(wusdOf)) : 0;
+  const oldFix = $('#wusdFix'); if (oldFix) oldFix.remove();
   if (plansAll.length && maxW > 0 && maxW < 0.5) {
     $('#planTableWrap').insertAdjacentHTML('beforebegin',
-      '<div class="cons-diff warn">🩹 检测到规划金额异常小（最大 ' + fmtWusd(maxW) + ' 万美金）——可能是旧版按<b>万美金</b>录入、升级时被误按美元换算。<button class="btn small primary" data-action="repair:wusd">一键修复（所有金额 ×10000）</button>　修复前已自动备份，若数字仍不对可到「分层备份→全量」核对。</div>');
+      '<div class="cons-diff warn" id="wusdFix">🩹 检测到规划金额异常小（最大 ' + fmtWusd(maxW) + ' 万美金）——可能是旧版按<b>万美金</b>录入、升级时被误按美元换算。<button class="btn small primary" data-action="repair:wusd">一键修复（所有金额 ×10000）</button>　修复前已自动备份。</div>');
   }
 
-  // 团队配置
+  /* ---- 年初规划 ---- */
+  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });   // 多条规划对应同一个系统预算项
+  const pw = $('#planTableWrap');
+  pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项：年初拿到规划清单后「批量粘贴」（每行 名称、金额）或一条条新增；编码等平台上出现后再关联。</div>' :
+    '<table class="tbl tbl-plan"><thead><tr><th>规划名称</th><th>编码<div class="sub">系统里的预算项</div></th><th>所属花钱项目</th><th class="num">金额<div class="sub">万美金</div></th><th class="num">折合 ¥</th><th class="num">目标 %<div class="sub">留空 = 默认</div></th><th>平台上的情况</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
+    c.plansY.map(p => {
+      const s = p.code ? c.per[p.code] : null, r = (p.code && d) ? d.rows.find(x => x.code === p.code) : null;
+      const plat = p.dead ? '<span class="tag t-gray">已失效</span>' : !p.code ? '<span class="tag t-gray">待关联编码</span>' : !s ? (c.snap ? '<span class="tag t-amber">平台上还没出现</span>' : '<span class="muted">—</span>')
+        : '<b>' + fmtCny(s.avail) + '</b> 可用<div class="sub">执行 ' + fmtPct(s.execRate) + (r && r.assessed ? ' → 年底 ' + fmtPct(r.rate) : '') + '</div>';
+      return '<tr' + (p.dead ? ' class="dead"' : '') + '><td>' + (p.dead ? '<span class="tag t-gray">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b>' +
+        ((share[p.code] || []).length > 1 ? '<div class="sub">和「' + esc(share[p.code].filter(q => q.id !== p.id).map(q => q.name).join('、')) + '」共用系统里的同一个预算项</div>' : '') + '</td>' +
+        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px"></td>' +
+        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="planProject" value="' + esc(p.planProject || '') + '" placeholder="如 项目A,项目B" style="width:110px"></td>' +
+        '<td class="num"><input class="cell-in" data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px"></td>' +
+        '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
+        '<td class="num"><input class="cell-in" data-pedit="' + p.id + '" data-f="target" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" inputmode="decimal" placeholder="默认" style="width:56px"></td>' +
+        '<td>' + plat + '</td><td class="muted">' + esc(p.note || '') + '</td>' +
+        '<td style="white-space:nowrap">' + smallBtn('plan:dead', p.dead ? '恢复' : '失效', '', ' data-id="' + p.id + '" title="预算下不来的项目：从执行率的分母里拿掉、不再催 BA"') + ' ' + smallBtn('plan:del', '删除', 'danger', ' data-id="' + p.id + '"') + '</td></tr>';
+    }).join('') + '</tbody></table>' +
+    '<div class="muted" style="margin-top:6px">编码、所属花钱项目、金额、目标都能直接在表里改，改完点一下别处自动保存。目标留空 = 用参数里的默认目标，填 0 = 不考核。</div>';
+
+  /* ---- 团队配置（只读，来源 = 数据集里的团队 Excel）+ PO 月度需求的来历 ---- */
   const team = state.team || [];
-  const tp = sum(team.filter(g => g.kind === 'po'), g => (g.headcount || 0) * (g.rate || 0));
-  const to = sum(team.filter(g => g.kind === 'od'), g => (g.headcount || 0) * (g.rate || 0));
-  let calib = '';
-  if (team.length) {
-    const poN = sum(team.filter(g => g.kind === 'po'), g => g.headcount || 0), odN = sum(team.filter(g => g.kind === 'od'), g => g.headcount || 0);
-    calib = '<table class="cons-table" style="margin-top:8px">' +
-      '<tr><td>PO 外包 ' + poN + ' 人 · 理论日额 / 本月理论（' + c.workdays(Math.max(c.curM, 1)) + ' 工作日 × 出勤 ' + (m.attendFactor != null ? m.attendFactor : 1) + '）</td><td>' + fmtCny(tp) + ' / ' + fmtCny(c.team.theoryPo(Math.max(c.curM, 1))) + '</td></tr>' +
-      '<tr><td>OD 外包 ' + odN + ' 人 · 理论月额</td><td>' + fmtCny(to) + (c.odAvg > 0 && c.team.calibOd != null ? '（vs 近3月实际 ' + fmtCny(c.odAvg) + '，偏差 ' + fmtPct(c.team.calibOd) + '）' : '') + '</td></tr>' +
-      (c.poAvg > 0 ? '<tr><td>vs 近3月 PO 实际月均</td><td>' + fmtCny(c.poAvg) + (c.team.calibPo != null ? '（偏差 ' + fmtPct(c.team.calibPo) + '）' : '') + '</td></tr>' : '') +
-      '</table>' + ((Math.abs(c.team.calibPo || 0) > 0.1 || Math.abs(c.team.calibOd || 0) > 0.1) ? '<div class="cons-diff info">ℹ️ 理论与实际偏差超 10%：检查人数、单价或出勤系数。</div>' : '<div class="cons-diff ok">✓ 团队配置与历史实际吻合</div>');
-  }
-  // 变动计划（团队 Excel「变动计划」页签）：填了结束年月 = 临时人员（只在这一段里算）；没填 = 常驻人员的进出
   const tPlan = Array.isArray(state.teamPlan) ? state.teamPlan : [];
+  const poT = team.filter(g => g.kind === 'po'), odT = team.filter(g => g.kind === 'od');
+  const hcOf = a => sum(a, g => g.headcount || 0);
   const curMo2 = Math.max(Math.min(c.curM, 12), 1);
-  const ymNow = Y + '-' + String(curMo2).padStart(2, '0');
+  let need = '';
+  if (c.snap) {
+    // 近 3 个已结束的月份（和 calc 里取的是同一批）：每个月的理论、实际、比值——校准系数就是从这里来的
+    const last3 = c.po.asOf ? Object.entries(c.poMonthlyAct).filter(([mo, v]) => v > 0 && +mo < c.po.asOf).sort((a, b) => +a[0] - +b[0]).slice(-3) : [];
+    const PX = d ? (d.isDec ? d.jan : d.po) : null;
+    const th = last3.map(([mo]) => c.team.theoryPo(+mo)), ac = last3.map(([, v]) => v);
+    const thS = sum(th), acS = sum(ac), ratio = thS > 0 ? acS / thS : null;
+    const calib = d ? d.calibR : 1;
+    need = '<h3 class="sec-title">PO 团队的月度需求怎么来的<span class="muted">　理论 = 日额 × 工作日 × 出勤系数；再乘一个校准系数</span></h3>' +
+      (c.team.hasPoCfg
+        ? '<div class="sum-line">PO 团队 <b>' + hcOf(poT) + '</b> 人 · 日额 <b>' + fmtCny(c.team.poDaily) + '</b>' + (PX ? '　｜　' + (d.isDec ? '明年 1 月' : PX.nextM + ' 月') + '（' + PX.wd + ' 个工作日）理论 ' + fmtCny(PX.theory) + ' × 校准 ' + calib.toFixed(3) + ' = <b>' + fmtCny(PX.need) + '</b>' + ((PX.histNext || PX.hist || 0) > 0 ? '　｜　近 3 月实际按工作日折算 ' + fmtCny(PX.histNext || PX.hist) : '') : '') + '</div>'
+        : '<div class="sum-line">没有团队配置：月度需求 = 近 3 月实际月均 × 按工作日折算（' + fmtCny(c.poAvg) + '/月）。把团队 Excel 放进数据集根目录，就会改用人数 × 单价来算。</div>') +
+      (last3.length
+        ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>月</th><th class="num">工作日</th><th class="num">理论</th><th class="num">实际执行<div class="sub">PO 明细</div></th><th class="num">实际 ÷ 理论</th></tr></thead><tbody>' +
+          last3.map(([mo], i) => { const q = th[i] > 0 ? ac[i] / th[i] : null; return '<tr><td>' + mo + ' 月</td><td class="num">' + c.workdays(+mo) + '</td><td class="num">' + fmtCny(th[i]) + '</td><td class="num">' + fmtCny(ac[i]) + '</td><td class="num">' + (q == null ? '—' : '<span class="' + (Math.abs(q - 1) > 0.1 ? 'bad' : '') + '">' + q.toFixed(3) + '</span>') + '</td></tr>'; }).join('') +
+          '<tr class="sub-total"><td>合计 / 平均</td><td class="num">' + sum(last3, ([mo]) => c.workdays(+mo)) + '</td><td class="num">' + fmtCny(thS) + '</td><td class="num">' + fmtCny(acS) + '</td><td class="num"><b>' + (ratio == null ? '—' : ratio.toFixed(3)) + '</b></td></tr></tbody></table></div>' +
+          '<div class="muted" style="margin-top:6px">校准系数 = 合计实际 ÷ 合计理论，夹在 0.9 ~ 1.1 之间' + (ratio != null ? '（现在 ' + ratio.toFixed(3) + ' → 用 ' + calib.toFixed(3) + (Math.abs(ratio - calib) > 0.0005 ? '，被夹过了' : '') + '）' : '') + '。近 3 月实际月均 ' + fmtCny(c.poAvg) + '。某个月份的实际明显偏低时，先看那个月的执行列是不是还没记全。</div>'
+        : '<div class="muted">近 3 个已结束的月份还没有实际数，暂时不校准（系数 = 1）。</div>');
+  }
   const ymTxt = ym => ym.slice(0, 4) + '年' + (+ym.slice(5, 7)) + '月';
+  const ymNow = Y + '-' + String(curMo2).padStart(2, '0');
   const planEffect = p => {
     const yy = +p.ym.slice(0, 4), mm = +p.ym.slice(5, 7);
     if (p.end) {
@@ -3028,81 +3075,90 @@ function renderData() {
   const planMo0 = Math.max(curMo2 - 1, 1);   // 各月人数表从上个月开始列（OD 有滞后，上个月的人数决定这个月底的扣减）
   const planMos = Array.from({ length: 14 - planMo0 }, (_, i) => planMo0 + i);   // 最后一项 13 = 明年 1 月
   const planHtml2 = tPlan.length
-    ? '<div style="margin-top:12px"><b style="font-size:13px">变动计划</b> <span class="muted">来自团队 Excel「变动计划」页签 · 页签里只列常驻人员；填了「结束年月」的是临时人员；人数变化按整月算</span>' +
+    ? '<details class="fold" id="foldTeamPlan"' + (foldOpen.foldTeamPlan ? ' open' : '') + '><summary>变动计划 ' + tPlan.length + ' 条<span class="muted">　来自团队 Excel「变动计划」页签</span></summary>' +
       '<table class="tbl"><thead><tr><th>生效年月</th><th>结束年月</th><th>类型</th><th class="num">单价</th><th class="num">人数</th><th>备注</th><th>对决策的影响</th></tr></thead><tbody>' +
       tPlan.slice().sort((a, b) => a.ym < b.ym ? -1 : 1).map(p => {
         const ended = p.end && p.end <= ymNow;
         return '<tr' + ((ended || (!p.end && p.ym < ymNow)) ? ' style="opacity:.65"' : '') + '><td>' + esc(ymTxt(p.ym)) + '</td><td>' + (p.end ? esc(ymTxt(p.end)) : '<span class="muted">常驻</span>') + '</td><td>' + (p.kind === 'po' ? 'PO' : 'OD') + (p.own ? '·归 ' + esc(p.own) : '') + '</td><td class="num">' + fmtCny(p.rate) + '</td><td class="num">' + (p.count > 0 ? '+' : '') + p.count + '</td><td>' + esc(p.note || '') + '</td><td class="muted">' + planEffect(p) + (ended ? '；已结束' : '') + '</td></tr>';
       }).join('') + '</tbody></table>' +
-      '<div class="muted" style="margin-top:6px">各月人数（含计划）与对应的扣减 / 需求：</div>' +
+      '<div class="muted" style="margin:8px 0 4px">各月人数（含计划）与对应的扣减 / 需求：</div>' +
       '<table class="tbl"><thead><tr>' + planMos.map(mo => '<th class="num">' + (mo <= 12 ? mo + '月' : '明年1月') + '</th>').join('') + '</tr></thead><tbody>' +
       '<tr>' + planMos.map(mo => { const h = mo <= 12 ? c.team.hcSummary(Y, mo) : c.team.hcSummary(Y + 1, 1); return '<td class="num muted">PO ' + h.po + '<br>OD ' + h.od + '</td>'; }).join('') + '</tr>' +
-      '<tr>' + planMos.map(mo => '<td class="num muted">' + (mo === 13 ? 'PO 需 ' + fmtCny(c.poDecision ? c.poDecision.jan.need : 0) : (mo < curMo2 ? '（上个月）' : mo === 12 ? 'OD 扣 ' + fmtCny(c.odEst[12] || 0) + '（年底）' : 'OD 扣 ' + fmtCny(c.odEst[mo] || 0))) + '</td>').join('') + '</tr></tbody></table></div>'
+      '<tr>' + planMos.map(mo => '<td class="num muted">' + (mo === 13 ? 'PO 需 ' + fmtCny(d && d.jan ? d.jan.need : 0) : (mo < curMo2 ? '（上个月）' : mo === 12 ? 'OD 扣 ' + fmtCny(c.odEst[12] || 0) + '（年底）' : 'OD 扣 ' + fmtCny(c.odEst[mo] || 0))) + '</td>').join('') + '</tr></tbody></table></details>'
     : '';
   const anyOwn = team.some(g => g.kind === 'po' && g.poGroup);
-  $('#teamTableWrap').innerHTML = (!team.length && !tPlan.length ? '<div class="empty">还没有团队配置——不配也能用（预测退回历史外推），配上后扩编/缩编的下月预测立即准确。</div>' : '') +
-    (team.length ? '<table class="tbl"><thead><tr><th>组名</th><th>类型</th><th class="num">人数</th><th class="num">单价(¥)</th><th>PO 归属</th></tr></thead><tbody>' +
-    team.map(g => '<tr><td><b>' + esc(g.name) + '</b></td><td><span class="st st-' + (g.kind === 'po' ? 'open' : 'accepted') + '">' + (g.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</span></td><td class="num">' + (g.headcount || 0) + '</td><td class="num">' + fmtCny(g.rate || 0) + '</td><td>' + (g.kind === 'po' ? (g.poGroup ? '<b>' + esc(g.poGroup) + '</b>' : '<span class="muted">未标</span>') : '<span class="muted">—</span>') + '</td></tr>').join('') + '</tbody></table>' +
-    (anyOwn && team.some(g => g.kind === 'po' && !g.poGroup && (g.headcount || 0) > 0) ? '<div class="cons-diff info">ℹ️ 有 PO 人员没标归属，他们会并成"未标归属"的一张。在团队 Excel 的 PO 页签加一列「PO归属」（值随意，如 PO甲 / PO乙），或单独一个页签名含「归属」的清单（姓名 + 归属）。</div>' : (!anyOwn ? '<div class="muted" style="margin-top:6px">想按人员归属把 PO 分成几张下：在团队 Excel 的 PO 页签加一列「PO归属」（值随意，如 PO甲 / PO乙），或单独一个页签名含「归属」的清单（姓名 + 归属两列）。</div>' : '')) : '') + calib + planHtml2;
+  $('#teamTableWrap').innerHTML = (!team.length && !tPlan.length ? '<div class="empty">还没有团队配置——不配也能用（预测退回历史外推）。把团队 Excel 放进数据集根目录，打开看板自动导入。</div>' : '') +
+    (team.length ? '<div class="tbl-wrap"><table class="tbl tbl-team"><thead><tr><th>类型</th><th>组</th><th>PO 归属</th><th class="num">人数</th><th class="num">单价</th><th class="num">小计</th></tr></thead><tbody>' +
+      team.map(g => '<tr><td><span class="tag ' + (g.kind === 'po' ? 't-blue' : 't-teal') + '">' + (g.kind === 'po' ? 'PO' : 'OD') + '</span></td><td><b>' + esc(g.name) + '</b></td><td>' + (g.kind === 'po' ? (g.poGroup ? '<b>' + esc(g.poGroup) + '</b>' : '<span class="muted">未标</span>') : '<span class="muted">—</span>') + '</td><td class="num">' + (g.headcount || 0) + '</td><td class="num">' + (g.kind === 'po' ? '日 ' : '月 ') + fmtCny(g.rate || 0) + '</td><td class="num">' + fmtCny((g.headcount || 0) * (g.rate || 0)) + '</td></tr>').join('') + '</tbody></table></div>' +
+      (team.some(g => g.kind === 'po' && (g.headcount || 0) > 0 && !g.poGroup) ? '<div class="muted" style="margin-top:6px">' + (anyOwn ? '没标归属的 PO 人员会并成「未标归属」的一张。' : '') + '想按人员归属把 PO 分成几张下：在团队 Excel 的 PO 页签加一列「PO归属」（值随意，如 PO甲 / PO乙），或单独一个页签名含「归属」的清单（姓名 + 归属两列）。</div>' : '') : '') +
+    '<div class="muted" style="margin-top:6px">' + (c.team.hasOdCfg ? 'OD 团队 <b>' + hcOf(odT) + '</b> 人 · 月额 ' + fmtCny(c.team.theoryOd) + (c.odAvg > 0 ? '　｜　近 3 月实际月均 ' + fmtCny(c.odAvg) + (c.team.calibOd != null ? '（偏差 ' + fmtPct(c.team.calibOd) + '）' : '') : '') : '没有 OD 团队配置：OD 扣减按近 3 月实际估算（' + fmtCny(c.odAvg) + '/月）') + '</div>' +
+    need + planHtml2;
 
-  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });   // 多条规划对应同一个系统预算项
-  const pw = $('#planTableWrap');
-  pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项。</div>' :
-    '<table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额(WUSD)</th><th class="num">折合¥</th><th class="num">目标%</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5" title="已失效：预算下不来，不计入执行率分母"' : '') + '><td>' + (p.dead ? '<span class="st st-pending">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b>' +
-      ((share[p.code] || []).length > 1 ? ' <span class="muted" title="多条规划对应系统里的同一个预算项：金额相加、目标按金额加权，执行率按合并项看">与「' + esc(share[p.code].filter(q => q.id !== p.id).map(q => q.name).join('、')) + '」共用系统预算项</span>' : '') + '</td>' +
-      '<td><input data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px"></td>' +
-      '<td class="num"><input data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
-      '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
-      '<td class="num"><input data-pedit="' + p.id + '" data-f="target" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" inputmode="decimal" placeholder="默认" style="width:56px;border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px;text-align:right"></td>' +
-      '<td>' + esc(p.note || '') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn small" data-action="plan:dead" data-id="' + p.id + '">' + (p.dead ? '恢复' : '失效') + '</button> <button class="btn small danger" data-action="plan:del" data-id="' + p.id + '">删除</button></td></tr>').join('') + '</tbody></table>' +
-    '<div class="muted" style="margin-top:6px">✏️ 金额/编码/目标可直接在表格里点开修改（万美金保留小数；目标留空=年度默认、0=不考核），改完点别处即自动保存。</div>';
-
-  const gw = $('#grantTableWrap');
-  const logs = [...(state.grantLogs || [])].sort((a, b) => a.date < b.date ? 1 : -1);
-  gw.innerHTML = !logs.length ? '<div class="empty">还没有授予记录（可选，不录不影响主功能）。</div>' :
-    '<table class="tbl"><thead><tr><th>日期</th><th>预算来源</th><th class="num">金额(CNY)</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    logs.map(g => '<tr><td>' + esc(g.date) + '</td><td>' + esc(g.code) + '</td><td class="num">' + fmtCny(g.amountCny) + '</td><td>' + esc(g.note || '') + '</td>' +
-      '<td style="white-space:nowrap"><button class="btn small" data-action="grant:edit" data-id="' + esc(g.date) + '">编辑</button> <button class="btn small danger" data-action="grant:del" data-id="' + esc(g.date) + '">删除</button></td></tr>').join('') + '</tbody></table>';
-  // 平台导出的授予流水（数据集里的预算授予文件）。多条规划对应系统里一个预算项时，每笔授予可以标注归哪条规划——
-  // 授予邮件里写着规划归属，按它人工判断；平台数据分不出每条规划的执行，所以执行率只按系统里的预算项看，授予可以按规划看
-  {
-    const gRows = [];
-    Object.entries((state.grantData || {}).byProject || {}).forEach(([pk, g]) => (g.rows || []).forEach(r => gRows.push(Object.assign({ proj: pk }, r))));
-    if (gRows.length) {
-      const attr = state.grantAttr || {}, Y = c.Y;
-      const merged = c.codes.filter(code => c.per[code].plan && c.per[code].plan.merged);
-      const plansOf = code => (c.per[code].plan && c.per[code].plan.plans) || [];
-      const rowHtml = gRows.filter(r => merged.indexOf(r.code) >= 0).map(r => {
-        const key = r.docNo + '|' + r.code, cur = attr[key] || '';
-        return '<tr><td>' + esc(r.name || r.code) + '</td><td class="muted">' + esc(r.docNo) + '</td><td class="muted">' + esc(r.by) + '</td><td class="num">' + fmtCny(r.itw) + '</td><td class="num">' + fmtCny(r.od) + '</td><td class="muted">' + esc(r.note) + '</td>' +
-          '<td><select data-grantattr="' + esc(key) + '"' + (/以前年度/.test(r.note) ? ' disabled' : '') + '><option value="">未归属</option>' + plansOf(r.code).map(p => '<option value="' + esc(p.id) + '"' + (cur === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') + '</select></td></tr>';
-      }).join('');
-      const sumHtml = merged.map(code => {
-        const rs = gRows.filter(r => r.code === code && !/以前年度/.test(r.note));
-        return '<div style="margin-top:6px"><b>' + esc(c.per[code].name) + '</b>（系统预算项，本年度授予 ' + fmtCny(sum(rs, r => r.total || r.itw + r.od)) + '）' + plansOf(code).map(p => {
-          const got = sum(rs.filter(r => attr[r.docNo + '|' + r.code] === p.id), r => r.total || r.itw + r.od);
-          return '<div class="muted" style="padding-left:12px">规划「' + esc(p.name) + '」：已归属 ' + fmtCny(got) + ' / 规划 ' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</div>';
-        }).join('') + (rs.some(r => !attr[r.docNo + '|' + r.code]) ? '<div class="muted" style="padding-left:12px;color:var(--amber)">未归属 ' + fmtCny(sum(rs.filter(r => !attr[r.docNo + '|' + r.code]), r => r.total || r.itw + r.od)) + '</div>' : '') + '</div>';
-      }).join('');
-      gw.insertAdjacentHTML('beforeend',
-        '<div style="margin-top:12px"><b style="font-size:13px">平台导出的授予流水</b> <span class="muted">共 ' + gRows.length + ' 行（数据集里的预算授予文件，自动导入）</span>' +
-        (merged.length ? sumHtml + '<div class="tbl-wrap" style="margin-top:6px"><table class="tbl"><thead><tr><th>系统预算项</th><th>授予单号</th><th>授予人</th><th class="num">IT外包</th><th class="num">OD</th><th>备注</th><th>归哪条规划</th></tr></thead><tbody>' + rowHtml + '</tbody></table></div><div class="muted" style="margin-top:4px">多条规划对应同一个系统预算项：按授予邮件里的规划归属，给每一笔选一下归哪条规划。执行率只按系统预算项看。</div>' : '<div class="muted">目前没有"多条规划对应一个预算项"的来源，不需要标注。</div>') +
-        '</div>');
-    }
-  }
-
-  // 工作日历
-  let wdHtml = '<div class="wd-grid">';
+  /* ---- 参数：改完自动保存 ---- */
+  $('#paramYear').textContent = Y;
+  const nDefault = c.plansY.filter(p => !p.dead && p.target == null && wusdOf(p) > 0).length;   // 沿用默认目标的来源
+  const pf = (id, label, val, step, hint) => '<label class="field"><span class="field-label">' + label + '</span><input id="' + id + '" data-param="1" type="number" step="' + step + '" value="' + val + '"><span class="sub">' + hint + '</span></label>';
+  let wdHtml = '<details class="fold"><summary>每月工作日（天）——默认按官方放假安排自动算，个别月不准可以覆盖</summary><div class="wd-grid" style="margin-top:8px">';
   for (let mo = 1; mo <= 12; mo++) {
     const v = (m.workdays && m.workdays[mo] != null && m.workdays[mo] !== '') ? m.workdays[mo] : '';
     wdHtml += '<label class="field"><span class="field-label">' + mo + '月 · 默认 ' + c.workdays(mo) + '</span><input type="number" min="15" max="31" data-wd="' + mo + '" value="' + v + '" placeholder="' + c.workdays(mo) + '"></label>';
   }
-  const hY = HOLIDAYS[Y] ? Y + ' 年：官方放假安排（含调休）' : (LUNAR_FEST[Y] ? Y + ' 年：节假日引擎自动推算（含农历节日/清明公式；国务院调休拼假无法预知，约有2~4天/年误差）' : Y + ' 年：固定节日+周末法推算');
-  $('#workdayForm').innerHTML = wdHtml + '</div><div class="btn-row" style="margin-top:10px"><button class="btn primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；通常无需手动调整，个别月不准可覆盖，留空用自动值。</span></div>';
-}
+  const hY = HOLIDAYS[Y] ? Y + ' 年：官方放假安排（含调休）' : (LUNAR_FEST[Y] ? Y + ' 年：按农历节日推算（国务院调休拼假无法预知，约有 2~4 天/年误差）' : Y + ' 年：固定节日 + 周末推算');
+  wdHtml += '</div><div class="btn-row" style="margin-top:10px"><button class="btn small primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；留空用自动值。</span></div></details>';
+  $('#metaForm').innerHTML =
+    '<div class="form-grid">' +
+    pf('meta-fx', '汇率', m.fxRate, '0.01', '规划里的万美金折成人民币') +
+    pf('meta-target', '默认执行率目标（%）', m.execRateTarget * 100, '0.5', nDefault ? '没单独设目标的 ' + nDefault + ' 个来源在用它；各来源自己的目标在规划表里设' : '各来源都设了自己的目标，这个现在没人用') +
+    pf('meta-bonus', '12 月年终奖扣减（几个月的月均）', m.bonusMonths, '0.5', '年终清算 = 11 月 + 12 月 + 这几个月') +
+    pf('meta-attend', '出勤系数（PO 预测用）', m.attendFactor != null ? m.attendFactor : 1, '0.05', '1 = 满勤；和校准系数一起决定 PO 的预测') +
+    pf('meta-freq', '数据更新提醒（天）', state.meta.updateFreqDays || 14, '1', '超过这么多天没导入平台数据，首页就提醒') +
+    '</div><div class="muted" id="paramMsg" style="margin-top:6px">' + (Date.now() - paramSavedAt < 4000 ? '<span style="color:var(--green)">✓ 已保存</span>' : '改完点一下别处就保存。') + '</div>' + wdHtml;
 
+  /* ---- 决策设置：OD 锚定项目、剔除名单（集中入口；首页决策卡和各页签里也能改） ---- */
+  const yp = yearParams(Y), srcEx = c.excluded || [];
+  const poEx = Array.from(new Set((yp.excludedPos || []).map(k => String(k).split('|')[0])));
+  const anchorSel = a => '<label class="anchor-item">' + a.mo + ' 月 <select data-odanchor="' + a.mo + '">' + d.od.projList.map(pk => '<option value="' + esc(pk) + '"' + (pk === a.proj ? ' selected' : '') + '>' + esc(pk) + '</option>').join('') + '</select></label>';
+  $('#ruleBox').innerHTML =
+    '<h3 class="sec-title">OD 锚定项目<span class="muted">　每个月底的 OD 扣减尽量只在一个花钱项目里扣。改了某个月，之后的月份都跟着用它，直到再改</span></h3>' +
+    (d && c.hasProj
+      ? (d.od.anchors.length ? '<div class="anchor-row">' + d.od.anchors.map(anchorSel).join('') + '</div>' : '<div class="muted">今年的 OD 扣减都排完了。</div>') +
+        '<div class="muted" style="margin-top:4px">都没设的时候取 OD 额度最多的项目。' + (Object.keys(yp.odAnchor || {}).length ? ' <a class="lnk" data-action="odanchor:reset">恢复默认</a>' : '现在用的就是默认。') + '</div>'
+      : '<div class="muted">导入执行表后可以设置。</div>') +
+    '<h3 class="sec-title">剔除的预算来源<span class="muted">　整个来源（连它的 PO）不参与计算；只对本年度有效</span></h3>' +
+    (srcEx.length ? '<div class="ex-list">' + srcEx.map(code => '<span class="ex-item"><b>' + esc(code) + '</b> ' + esc(c.snap && c.snap.rows[code] ? c.snap.rows[code].name : '') + ' ' + smallBtn('excl:del', '恢复', 'ghost', ' data-id="' + esc(code) + '"') + '</span>').join('') + '</div>'
+      : '<div class="muted">没有。平台上出现了不在你规划里的预算来源时，到「预算来源」页把它剔除。</div>') +
+    '<h3 class="sec-title">剔除出决策的 PO<span class="muted">　花的是你的预算、但不是 PO 团队在花（挂靠等）：不抵下月的 PO；已执行的和今年还会花掉的仍计入执行率。会带进新年</span></h3>' +
+    (poEx.length ? '<div class="ex-list">' + poEx.map(no => '<span class="ex-item"><b>' + esc(no) + '</b> ' + esc((c.poExclAgg[no] || {}).resName || '') + ' ' + smallBtn('po:exclDel', '恢复', 'ghost', ' data-key="' + esc(no) + '"') + '</span>').join('') + '</div>'
+      : '<div class="muted">没有。首页决策卡「已下」的旁边、PO 台账每一行的末尾都可以剔除。</div>');
+
+  /* ---- 授予流水：以平台导出的预算授予文件为准（数据集里自动导入）。以前手工记的留作兜底：某个来源没有平台文件时用它核对 ---- */
+  const gw = $('#grantTableWrap');
+  const gRows = [];
+  Object.entries((state.grantData || {}).byProject || {}).forEach(([pk, g]) => (g.rows || []).forEach(r => gRows.push(Object.assign({ proj: pk }, r))));
+  const attr = state.grantAttr || {};
+  const merged = c.codes.filter(code => c.per[code].plan && c.per[code].plan.merged);   // 多条规划对应系统里同一个预算项的
+  const plansOfCode = code => (c.per[code].plan && c.per[code].plan.plans) || [];
+  const logs = [...(state.grantLogs || [])].filter(g => inYear(g.date, Y)).sort((a, b) => a.date < b.date ? 1 : -1);
+  let gHtml = '';
+  if (gRows.length) {
+    const byCode = {};
+    gRows.forEach(r => { const o = byCode[r.code] = byCode[r.code] || { name: r.name || r.code, n: 0, itw: 0, od: 0, carry: 0 }; o.n++; if (/以前年度/.test(r.note)) o.carry += r.total || r.itw + r.od; else { o.itw += r.itw; o.od += r.od; } });
+    gHtml = '<div class="sum-line">共 <b>' + gRows.length + '</b> 行：' + Object.values(byCode).map(o => esc(o.name) + ' 授予 <b>' + fmtCny(o.itw + o.od) + '</b>' + (o.carry > 0 ? '（另有往年结转 ' + fmtCny(o.carry) + '）' : '')).join('　·　') + '</div>' +
+      (merged.length ? merged.map(code => '<div class="muted" style="margin-bottom:6px"><b>' + esc(c.per[code].name) + '</b> 对应多条规划：' + plansOfCode(code).map(p => {
+        const rs = gRows.filter(r => r.code === code && !/以前年度/.test(r.note));
+        return '「' + esc(p.name) + '」已归属 ' + fmtCny(sum(rs.filter(r => attr[r.docNo + '|' + r.code] === p.id), r => r.total || r.itw + r.od)) + ' / 规划 ' + fmtCny(wusdOf(p) * 10000 * m.fxRate);
+      }).join('；') + (gRows.some(r => r.code === code && !/以前年度/.test(r.note) && !attr[r.docNo + '|' + r.code]) ? '；<span class="bad">有还没选归属的</span>' : '') + '</div>').join('') : '') +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>花钱项目</th><th>预算项<div class="sub">系统里的名字</div></th><th>授予单号</th><th>授予人</th><th class="num">IT外包</th><th class="num">OD</th><th>备注</th>' + (merged.length ? '<th>归哪条规划</th>' : '') + '</tr></thead><tbody>' +
+      gRows.map(r => '<tr><td>' + esc(r.proj || '—') + '</td><td><b>' + esc(r.name || r.code) + '</b><div class="sub muted">' + esc(r.code) + '</div></td><td class="muted">' + esc(r.docNo) + '</td><td class="muted">' + esc(r.by) + '</td><td class="num">' + fmtCny(r.itw) + '</td><td class="num">' + fmtCny(r.od) + '</td><td class="muted">' + esc(r.note) + '</td>' +
+        (merged.length ? '<td>' + (merged.indexOf(r.code) >= 0 && !/以前年度/.test(r.note)
+          ? '<select data-grantattr="' + esc(r.docNo + '|' + r.code) + '"><option value="">未选</option>' + plansOfCode(r.code).map(p => '<option value="' + esc(p.id) + '"' + (attr[r.docNo + '|' + r.code] === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') + '</select>'
+          : '<span class="muted">—</span>') + '</td>' : '') + '</tr>').join('') + '</tbody></table></div>' +
+      (merged.length ? '<div class="muted" style="margin-top:6px">一个预算项对应多条规划时：按授予邮件里写的规划归属，给每一笔选一下归哪条规划（执行率还是按系统里的预算项看）。</div>' : '');
+  } else gHtml = '<div class="empty">数据集里还没有预算授予文件。从平台导出「预算授予」（按花钱项目），放进对应花钱项目的子文件夹，打开看板自动导入。</div>';
+  if (logs.length) gHtml += '<details class="fold"><summary>以前手工记的授予（兜底，' + logs.length + ' 笔）</summary><div class="muted" style="margin:4px 0">某个来源没有平台上的授予文件时，用它和执行表核对；有平台文件的以平台为准。</div><table class="tbl"><thead><tr><th>日期</th><th>预算来源</th><th class="num">金额</th><th>备注</th></tr></thead><tbody>' +
+    logs.map(g => '<tr><td>' + esc(g.date) + '</td><td>' + esc(g.code) + ' <span class="muted">' + esc(c.snap && c.snap.rows[g.code] ? c.snap.rows[g.code].name : '') + '</span></td><td class="num">' + fmtCny(g.amountCny) + '</td><td class="muted">' + esc(g.note || '') + '</td></tr>').join('') + '</tbody></table></details>';
+  gw.innerHTML = gHtml;
+}
 /* ================= 弹窗 ================= */
 function openModal(inner) {
   $('#modalRoot').innerHTML = '<div class="modal-overlay" data-action="modal:close"><div class="modal">' + inner + '</div></div>';
@@ -3122,18 +3178,6 @@ function planModal(p) {
     field('执行率目标（%）', '<input id="f-target" type="text" inputmode="decimal" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" placeholder="留空=年度默认；0=不考核，如 100 / 92">') +
     field('备注', '<input id="f-note" type="text" value="' + esc(p.note || '') + '">') +
     '</div><div class="modal-actions"><button class="btn" data-action="modal:close">取消</button><button class="btn primary" data-action="plan:save" data-id="' + (isNew ? '' : p.id) + '">保存</button></div>');
-}
-function grantModal(g) {
-  const isNew = !g;
-  g = g || { date: todayStr(), code: '', amountCny: '', note: '' };
-  const c0 = calc();
-  const codeOpts = [...new Set(c0.codes.concat((state.plans || []).map(p => p.code).filter(Boolean)))];
-  openModal('<h3>' + (isNew ? '记一笔授予' : '编辑授予') + '</h3><div class="form-grid">' +
-    field('日期', '<input id="f-date" type="date" value="' + esc(g.date) + '">') +
-    field('预算来源编码', '<input id="f-code" type="text" list="codeList" value="' + esc(g.code) + '" placeholder="选择或输入编码"><datalist id="codeList">' + codeOpts.map(x => '<option value="' + esc(x) + '">' + esc((c0.snap && c0.snap.rows[x] && c0.snap.rows[x].name) || '') + '</option>').join('') + '</datalist>') +
-    field('金额（CNY）', '<input id="f-amount" type="text" inputmode="decimal" value="' + (g.amountCny || '') + '" placeholder="如 15万">') +
-    field('备注', '<input id="f-note" type="text" value="' + esc(g.note || '') + '">') +
-    '</div><div class="modal-actions"><button class="btn" data-action="modal:close">取消</button><button class="btn primary" data-action="grant:save" data-id="' + (isNew ? '' : esc(g.date)) + '">保存</button></div>');
 }
 function planPasteModal() {
   openModal('<h3>批量粘贴规划</h3>' +
@@ -3211,74 +3255,6 @@ function parseTeamLines(text) {
 function parseTeamTable(rows) {
   return parseTeamLines(rows.map(r => r.join('\t')).join('\n'));
 }
-function teamPasteModal() {
-  openModal('<h3>批量导入团队配置</h3>' +
-    '<div class="muted" style="margin-bottom:8px">在你的团队 Excel 里<b>全选数据区域复制</b>（可含表头：名称/类型/人数/单价/项目，自动识别列）粘贴到下面。<b>替换</b>=以粘贴内容为准重建团队配置（以后人员变更只改 Excel 重新粘贴即可）。</div>' +
-    '<textarea id="pasteTeam" rows="9" placeholder="类型\t名称\t人数\t单价\t项目\npo\t高级开发\t3\t2200\t花钱项目A\nod\tOD工程师\t2\t42000\t花钱项目A\n\n（或直接粘贴 Excel 区域，首行为表头：姓名/角色/人数/日单价/月单价…）"></textarea>' +
-    '<div id="teamPastePreview"></div>' +
-    '<div class="modal-actions"><button class="btn" data-action="modal:close">取消</button>' +
-    '<button class="btn" data-action="team:pasteGo" data-mode="append">追加</button>' +
-    '<button class="btn primary" data-action="team:pasteGo" data-mode="replace">替换全部</button></div>');
-  $('#pasteTeam').addEventListener('input', renderTeamPastePreview);
-  renderTeamPastePreview();
-}
-function renderTeamPastePreview() {
-  const rows = parseTeamLines($('#pasteTeam').value);
-  $('#teamPastePreview').innerHTML = rows.length
-    ? '<div class="muted" style="margin:8px 0 4px">识别 ' + rows.length + ' 组（月度理论：' + fmtCny(sum(rows.filter(r => r.kind === 'od'), r => r.headcount * r.rate)) + '/OD，' + fmtCny(sum(rows.filter(r => r.kind === 'po'), r => r.headcount * r.rate)) + '/PO日额）：</div>' +
-      '<div class="paste-preview"><table>' + rows.map(r => '<tr><td>' + esc(r.name) + '</td><td>' + (r.kind === 'po' ? 'PO·日单价' : 'OD·月单价') + '</td><td>' + r.headcount + '</td><td>' + fmtCny(r.rate) + '</td><td>' + esc(r.project || '—') + '</td></tr>').join('') + '</table></div>'
-    : '';
-}
-function teamPasteGo(mode) {
-  const rows = parseTeamLines($('#pasteTeam').value);
-  if (!rows.length) { alert('未识别到任何人员组，检查格式或表头'); return; }
-  if (mode === 'replace') {
-    if (state.team.length && !confirm('替换将覆盖现有 ' + state.team.length + ' 组团队配置，确认？')) return;
-    state.team = rows.map(r => ({ id: uid(), ...r }));
-  } else rows.forEach(r => state.team.push({ id: uid(), ...r }));
-  save(); closeModal();
-  alert('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 组团队配置。');
-}
-function teamModal(g) {
-  const isNew = !g;
-  g = g || { kind: 'po', name: '', headcount: '', rate: '', project: '' };
-  openModal('<h3>' + (isNew ? '新增人员组' : '编辑人员组') + '</h3><div class="form-grid">' +
-    field('组名（如 高级开发 / 初级测试）', '<input id="f-name" type="text" value="' + esc(g.name) + '">') +
-    field('类型', '<select id="f-kind"><option value="po"' + (g.kind === 'po' ? ' selected' : '') + '>PO 外包（按日单价）</option><option value="od"' + (g.kind === 'od' ? ' selected' : '') + '>OD 外包（按月单价）</option></select>') +
-    field('人数', '<input id="f-headcount" type="number" min="0" step="1" value="' + (g.headcount || '') + '">') +
-    field('单价（¥，PO填日单价 / OD填月单价）', '<input id="f-rate" type="text" inputmode="decimal" value="' + (g.rate || '') + '" placeholder="如 2200 或 4.2万">') +
-    field('所属花钱项目（可选）', '<input id="f-project" type="text" value="' + esc(g.project || '') + '">') +
-    '</div><div class="modal-actions"><button class="btn" data-action="modal:close">取消</button><button class="btn primary" data-action="team:save" data-id="' + (isNew ? '' : g.id) + '">保存</button></div>');
-}
-function buildSharePkg(includePo, includeTeam) {
-  return {
-    budgetDashShare: 1,
-    exportedAt: todayStr() + ' ' + new Date().toTimeString().slice(0, 5),
-    state: {
-      schemaVersion: 4,
-      meta: state.meta, years: state.years, plans: state.plans,
-      team: includeTeam ? state.team : [],
-      grantLogs: state.grantLogs, execSnaps: state.execSnaps, projAlias: state.projAlias, grantData: state.grantData, grantAttr: state.grantAttr, changeLog: state.changeLog, lastImportAt: state.lastImportAt,
-      poDataByYear: includePo ? state.poDataByYear : {},
-      updatedAt: state.updatedAt
-    }
-  };
-}
-function publishModal() {
-  openModal('<h3>📤 发布分享快照</h3>' +
-    '<div class="muted" style="margin-bottom:10px">生成 <b>data.json</b> 放到你本机服务目录（与 index.html 同目录，如 python3 -m http.server 8734 的目录）。同事打开 http://你的IP:8734 即进入<b>只读分享模式</b>（横幅标注数据截至时间，无任何编辑按钮）。再次发布覆盖 data.json 即更新，主数据仍只在你浏览器里。</div>' +
-    '<label class="check"><input type="checkbox" id="pub-po" checked> 包含 PO 明细（编号/金额/执行/状态）</label>' +
-    '<label class="check"><input type="checkbox" id="pub-team"> 包含团队配置（人数与单价，敏感，默认不包含）</label>' +
-    '<div class="modal-actions"><button class="btn" data-action="modal:close">取消</button><button class="btn primary" data-action="publish:go">生成 data.json</button></div>');
-}
-function doPublish() {
-  const pkg = buildSharePkg($('#pub-po').checked, $('#pub-team').checked);
-  const blob = new Blob([JSON.stringify(pkg)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = 'data.json'; a.click(); URL.revokeObjectURL(a.href);
-  closeModal();
-  alert('已生成 data.json。请把它放到你的服务目录（与 index.html 同目录），同事们刷新页面即可看到本次发布的数据。');
-}
 async function saveToDataFile() {
   if (!window.showSaveFilePicker) {
     const blob = new Blob([JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2)], { type: 'application/json' });
@@ -3306,7 +3282,7 @@ async function saveToDataFile() {
 }
 function exportModal() {
   openModal('<h3>分层备份</h3>' +
-    '<div class="muted" style="margin-bottom:10px">三类备份包，恢复时自动识别：全量（配置+数据，灾备用）；仅配置（规划+团队+参数——换电脑/换浏览器先导它）；仅数据（执行表快照+PO明细+授予流水，归档用）。文件只存在你本机。</div>' +
+    '<div class="muted" style="margin-bottom:10px">三类备份包，恢复时自动识别：全量（配置+数据，灾备用）；仅配置（规划 + 团队和变动计划 + 参数 + 决策设置——换电脑、换浏览器时先导它）；仅数据（执行表快照 + PO 明细 + 授予流水，归档用）。文件只存在你本机。</div>' +
     '<div class="btn-row" style="justify-content:center;gap:12px">' +
     '<button class="btn primary" data-action="export:full">📦 全量备份</button>' +
     '<button class="btn" data-action="export:config">⚙️ 仅配置</button>' +
@@ -3315,7 +3291,7 @@ function exportModal() {
 }
 function doExport(kind) {
   let obj, name;
-  if (kind === 'config') { obj = { type: 'budget-dash-config', schemaVersion: 4, meta: state.meta, years: state.years, plans: state.plans, team: state.team, projAlias: state.projAlias }; name = '预算看板-配置'; }
+  if (kind === 'config') { obj = { type: 'budget-dash-config', schemaVersion: 4, meta: state.meta, years: state.years, plans: state.plans, team: state.team, teamPlan: state.teamPlan, grantAttr: state.grantAttr, projAlias: state.projAlias }; name = '预算看板-配置'; }
   else if (kind === 'data') { obj = { type: 'budget-dash-data', schemaVersion: 4, execSnaps: state.execSnaps, poDataByYear: state.poDataByYear, grantLogs: state.grantLogs, grantData: state.grantData, grantAttr: state.grantAttr, changeLog: state.changeLog, lastImportAt: state.lastImportAt, importLogs: state.importLogs, projPrints: state.projPrints, projAlias: state.projAlias }; name = '预算看板-数据'; }
   else { obj = { type: 'budget-dash-full', ...state }; name = '预算看板-全量'; }
   const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
@@ -3461,6 +3437,9 @@ async function handleAction(action, el, e) {
     t.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
   }
   if (action === 'health:toggle') { healthOpen = !healthOpen; renderNow(); return; }
+  if (action === 'odanchor:reset') {   // OD 锚定项目全部恢复默认（取 OD 额度最多的项目）
+    const yp = yearParams(curYear()); delete yp.odAnchor; state.years[curYear()] = yp; save(); return;
+  }
 
   if (action === 'import:open') return importModal();
   if (action === 'import:pick') { const inp = $('#fileInput'); if (inp) inp.click(); return; }
@@ -3492,25 +3471,6 @@ async function handleAction(action, el, e) {
     return;
   }
   if (action === 'hc:confirm') { state.meta.lastHcCheck = todayStr(); save(); return; }
-  if (action === 'team:add') return teamModal(null);
-  if (action === 'team:paste') return teamPasteModal();
-  if (action === 'team:pasteGo') return teamPasteGo(el.dataset.mode);
-  if (action === 'team:edit') return teamModal((state.team || []).find(g => g.id === id));
-  if (action === 'team:del') {
-    if (confirm('删除该人员组？')) { state.team = state.team.filter(g => g.id !== id); save(); }
-    return;
-  }
-  if (action === 'team:save') {
-    const name = $('#f-name').value.trim(), kind = $('#f-kind').value;
-    const headcount = parseInt($('#f-headcount').value, 10) || 0, rate = parseMoney($('#f-rate').value);
-    if (!name) { alert('请填写组名'); return; }
-    if (rate == null || rate <= 0) { alert('请填写有效单价'); return; }
-    const project = $('#f-project').value.trim();
-    if (id) Object.assign(state.team.find(g => g.id === id), { name, kind, headcount, rate, project });
-    else state.team.push({ id: uid(), name, kind, headcount, rate, project });
-    save(); closeModal();
-    return;
-  }
   if (action === 'data:saveFile') return saveToDataFile();
   if (action === 'data:openFile') return openDataFile();
   if (action === 'dataset:set') return setDatasetDir();
@@ -3548,8 +3508,6 @@ async function handleAction(action, el, e) {
     return;
   }
   if (action === 'data:export') return exportModal();
-  if (action === 'data:publish') return publishModal();
-  if (action === 'publish:go') return doPublish();
   if (action === 'export:full') return doExport('full');
   if (action === 'export:config') return doExport('config');
   if (action === 'export:data') return doExport('data');
@@ -3583,7 +3541,6 @@ async function handleAction(action, el, e) {
   if (action === 'plan:add') return planModal(null);
   if (action === 'plan:paste') return planPasteModal();
   if (action === 'plan:pasteGo') return planPasteGo(el.dataset.mode);
-  if (action === 'plan:edit') return planModal(state.plans.find(p => p.id === id));
   if (action === 'plan:del') {
     const p = state.plans.find(x => x.id === id);
     if (p && confirm('删除规划项「' + p.name + '」？')) { state.plans = state.plans.filter(x => x.id !== id); touch('plan'); save(); }
@@ -3608,42 +3565,11 @@ async function handleAction(action, el, e) {
   }
   if (action === 'link:manage') return linkModal();
 
-  if (action === 'grant:add') return grantModal(null);
-  if (action === 'grant:edit') return grantModal(state.grantLogs.find(g => g.date === id));
-  if (action === 'grant:del') {
-    if (confirm('删除 ' + id + ' 的授予记录？')) { state.grantLogs = state.grantLogs.filter(g => g.date !== id); touch('grants'); save(); }
-    return;
-  }
-  if (action === 'grant:save') {
-    const date = $('#f-date').value, code = $('#f-code').value.trim(), amount = parseMoney($('#f-amount').value);
-    if (!date) { alert('请选择日期'); return; }
-    if (!code) { alert('请填写预算来源编码'); return; }
-    if (amount == null || amount <= 0) { alert('请填写有效金额'); return; }
-    const note = $('#f-note').value.trim();
-    const ex = state.grantLogs.find(g => g.date === date);
-    if (ex) Object.assign(ex, { date, code, amountCny: amount, note });
-    else state.grantLogs.push({ date, code, amountCny: amount, note });
-    state.grantLogs.sort((a, b) => a.date < b.date ? -1 : 1);
-    touch('grants'); save(); closeModal();
-    return;
-  }
-
-  if (action === 'meta:save') {
-    const tg = parseFloat($('#meta-target').value), fx = parseFloat($('#meta-fx').value), bo = parseFloat($('#meta-bonus').value), fq = parseInt($('#meta-freq').value, 10), at = parseFloat($('#meta-attend').value);
-    if (!(tg >= 50 && tg <= 100)) { alert('执行率目标应在 50~100'); return; }
-    if (!(fx > 0 && fx < 20)) { alert('汇率无效'); return; }
-    if (!(bo >= 0 && bo <= 12)) { alert('年终奖倍数应在 0~12'); return; }
-    if (!(fq >= 1 && fq <= 60)) { alert('更新频率应在 1~60 天'); return; }
-    if (!Number.isFinite(at) || at < 0.5 || at > 1.5) { alert('出勤系数应在 0.5~1.5'); return; }
-    const yp = yearParams(curYear());
-    // 在原有年度参数上改这几项：剔除名单、OD 锚定项目等其他设置要留着
-    state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' });
-    state.meta.updateFreqDays = fq;
-    save(); alert('参数已保存（' + curYear() + ' 年度）'); return;
-  }
   if (action === 'year:prev') { switchYear(curYear() - 1); return; }
   if (action === 'year:next') { switchYear(curYear() + 1); return; }
   if (action === 'year:start') {
+    const want = +(el.dataset.y || 0);   // 从数据管理里点的是「开启下一年度」：先切过去
+    if (want >= 2000 && want <= 2100 && want !== curYear()) { state.meta.year = want; if (!state.years[want]) state.years[want] = defaultYearParams(); }
     const Y = curYear();
     const from = (state.plans.some(p => p.year === Y - 1) || (state.poDataByYear || {})[Y - 1] || state.execSnaps.some(s => inYear(s.date, Y - 1))) ? Y - 1 : (state.plans.length ? Math.max(...state.plans.map(p => p.year)) : null);
     if (from == null) { alert('没有可复制的上一年数据，请直接录入规划'); return; }
@@ -3655,17 +3581,11 @@ async function handleAction(action, el, e) {
     ypFrom.workdays = {};     // 每月工作日的手工覆盖是上一年放假安排的微调，不带到新年（新年用官方放假表 / 自动值，不对再调）
     // PO 级的剔除（按 PO 编号）带进新年：跨年的长 PO 明年还会出现在明细里，应该继续不参与决策；对新年没有的 PO 编号不起作用
     state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '' });
+    state.meta.lastHcCheck = '';   // 新年重新确认一次团队人数
     touch('plan'); save();
     alert(Y + ' 年度已开启：规划 ' + plansOf(Y).length + ' 项已复制。请到「数据管理」核对金额与汇率，然后正常导入新年数据。');
     return;
   }
-  if (action === 'data:export') {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = '预算看板数据-' + todayStr() + '.json'; a.click(); URL.revokeObjectURL(a.href);
-    return;
-  }
-  if (action === 'data:importBtn') { $('#importFile').click(); return; }
   if (action === 'data:demo') {
     if ((state.plans.length || state.execSnaps.length) && !confirm('加载示例数据将覆盖当前全部数据，确认？')) return;
     state = demoState(); save(); return;
@@ -3713,6 +3633,7 @@ document.addEventListener('change', e => {
     return;
   }
   if (e.target.matches('[data-fproj]') && importCtx) { importCtx.files[+e.target.dataset.fproj].project = e.target.value.trim(); return; }
+  if (e.target.matches('[data-param]')) { saveParams(); return; }   // 参数：改完自动保存
   if (e.target.matches('[data-pedit]')) {   // 规划表内联编辑（失焦保存）
     const id2 = e.target.dataset.pedit, f = e.target.dataset.f, p = state.plans.find(x => x.id === id2);
     if (!p) return;
@@ -3723,6 +3644,8 @@ document.addEventListener('change', e => {
       p.amountW = w;
     } else if (f === 'code') {
       p.code = v || '';
+    } else if (f === 'planProject') {
+      p.planProject = v;
     } else if (f === 'target') {
       if (v === '') p.target = null;
       else { const tv = parseFloat(v); if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('目标应为 0~100 或留空'); e.target.value = p.target != null ? Math.round(p.target * 100) : ''; return; } p.target = tv / 100; }
@@ -3774,6 +3697,7 @@ document.addEventListener('change', e => {
           state.meta = Object.assign({}, state.meta, obj.meta);
           state.years = obj.years || state.years;
           state.plans = obj.plans || []; state.team = obj.team || [];
+          if (obj.teamPlan) state.teamPlan = obj.teamPlan; if (obj.grantAttr) state.grantAttr = obj.grantAttr;
           if (obj.projAlias) state.projAlias = obj.projAlias;
           save(); alert('配置已恢复');
         } else if (obj.type === 'budget-dash-data') {
@@ -3801,55 +3725,42 @@ function renderAll() {
   renderData();
 }
 (async () => {
-  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '[::1]';
-  if ((location.protocol === 'http:' || location.protocol === 'https:') && !isLocal) {   // 仅局域网访问者进分享模式；本机维护端始终编辑模式
-    try {
-      const r = await fetch('data.json', { cache: 'no-store' });
-      if (r.ok) {
-        const d = await r.json();
-        if (d && d.budgetBudgetShare && d.state) { SHARE_MODE = true; SHARE_PKG = d; document.body.classList.add('share'); }
-        if (d && d.budgetDashShare && d.state) { SHARE_MODE = true; SHARE_PKG = d; document.body.classList.add('share'); }
-      }
-    } catch (e) { }
-  }
   load();
   renderAll();
-  if (!SHARE_MODE) {
-    try {
-      const dh = await idbGet('dir');
-      if (dh) {
-        dirHandle = dh;
-        const b2 = $('#datasetScanBtn'); if (b2) b2.style.display = '';
-        let dp = 'granted';
-        try { dp = await dh.queryPermission({ mode: 'read' }); } catch (e) { }
-        if (dp === 'granted') { await scanDataset(false); }
-      }
-    } catch (e) { }
-    // 解析规则变了的类别没能自动重读（没设数据集 / 没授权 / 文件夹里没有这类文件）：没有这类数据的直接记为已更新，有的留在首页提示
-    try {
-      const done = parseVerNeed().filter(k => !parseKindHasData(k));
-      if (done.length) { parseVerMark(done); save(); }
-      const sb = $('#datasetScanBtn');
-      if (sb && dirHandle) sb.textContent = parseVerNeed().some(parseKindHasData) ? '🔄 重读数据集' : '📁 扫描数据集';
-    } catch (e) { }
-    try {
-      const h = await idbGet('fh');
-      if (h && h.queryPermission) {
-        recentHandle = h;
-        const perm = await h.queryPermission({ mode: 'readwrite' });
-        if (perm === 'granted') {
-          // 浏览器里没有更新的未保存数据时，文件为准（git 同步契约）
-          const f = await h.getFile();
-          const savedAt = +(localStorage.getItem('budgetDash.savedAt') || 0);
-          const localRaw = localStorage.getItem(LS_KEY);
-          if (!localRaw || f.lastModified > savedAt) {
-            try { await loadFromHandle(h, true); } catch (e) { }
-          }
-          fileConnected = true;
-        } else {
-          const b = $('#quickLoadBtn'); if (b) b.style.display = '';
+  try {
+    const dh = await idbGet('dir');
+    if (dh) {
+      dirHandle = dh;
+      const b2 = $('#datasetScanBtn'); if (b2) b2.style.display = '';
+      let dp = 'granted';
+      try { dp = await dh.queryPermission({ mode: 'read' }); } catch (e) { }
+      if (dp === 'granted') { await scanDataset(false); }
+    }
+  } catch (e) { }
+  // 解析规则变了的类别没能自动重读（没设数据集 / 没授权 / 文件夹里没有这类文件）：没有这类数据的直接记为已更新，有的留在首页提示
+  try {
+    const done = parseVerNeed().filter(k => !parseKindHasData(k));
+    if (done.length) { parseVerMark(done); save(); }
+    const sb = $('#datasetScanBtn');
+    if (sb && dirHandle) sb.textContent = parseVerNeed().some(parseKindHasData) ? '🔄 重读数据集' : '📁 扫描数据集';
+  } catch (e) { }
+  try {
+    const h = await idbGet('fh');
+    if (h && h.queryPermission) {
+      recentHandle = h;
+      const perm = await h.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') {
+        // 浏览器里没有更新的未保存数据时，文件为准（git 同步契约）
+        const f = await h.getFile();
+        const savedAt = +(localStorage.getItem('budgetDash.savedAt') || 0);
+        const localRaw = localStorage.getItem(LS_KEY);
+        if (!localRaw || f.lastModified > savedAt) {
+          try { await loadFromHandle(h, true); } catch (e) { }
         }
+        fileConnected = true;
+      } else {
+        const b = $('#quickLoadBtn'); if (b) b.style.display = '';
       }
-    } catch (e) { }
-  }
+    }
+  } catch (e) { }
 })();
