@@ -48,9 +48,6 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .tbl tfoot td{font-weight:600;border-top:2px solid var(--line)}
 .tbl-wrap{overflow-x:auto}
 .st{padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap}
-.st-open{background:var(--blue-bg);color:var(--blue)}
-.st-pending{background:var(--amber-bg);color:var(--amber)}
-.st-accepted{background:var(--green-bg);color:var(--green)}
 .btn{border:1px solid var(--line);background:#fff;color:var(--text);border-radius:8px;padding:6px 14px;cursor:pointer;font-size:13px}
 .btn:hover{border-color:var(--blue);color:var(--blue)}
 .btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
@@ -61,30 +58,7 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .btn-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .muted{color:var(--muted);font-size:12px}
 .empty{color:var(--muted);font-size:13px;padding:18px 0;text-align:center}
-.pbar{position:relative;height:14px;background:#edf0f7;border-radius:7px;min-width:120px}
-.pbar-fill{height:100%;border-radius:7px;background:var(--blue);transition:width .3s}
-.pbar-fill.f-green{background:var(--green)} .pbar-fill.f-red{background:var(--red)} .pbar-fill.f-amber{background:var(--amber)}
-.mark{position:absolute;top:-3px;bottom:-3px;width:0;border-left:2px solid var(--green)}
-.mark-time{border-left-style:dashed;border-color:var(--amber)}
-.exec-row{display:grid;grid-template-columns:170px 1fr 62px;gap:10px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px}
-.exec-row:last-of-type{border-bottom:none}
-.exec-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.exec-val{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
-.exec-legend{display:flex;gap:14px;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
-.lg{display:inline-flex;align-items:center;gap:4px}
-.lg i{display:inline-block;width:12px;height:2px}
 .chart-box{position:relative;height:300px}
-.risk-item{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:13px;align-items:baseline}
-.risk-item:last-child{border-bottom:none}
-.risk-lv{flex-shrink:0;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;position:relative;top:4px}
-.risk-lv.red{background:var(--red)} .risk-lv.amber{background:var(--amber)} .risk-lv.green{background:var(--green)} .risk-lv.info{background:var(--gray)}
-.act-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line);font-size:13px;align-items:flex-start}
-.act-item:last-child{border-bottom:none}
-.act-no{flex-shrink:0;width:22px;height:22px;border-radius:50%;background:var(--blue-bg);color:var(--blue);display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
-.act-item.done .act-no{background:var(--green-bg);color:var(--green)}
-.act-item.done .act-body{opacity:.5;text-decoration:line-through}
-.act-body{flex:1}
-.act-done-btn{flex-shrink:0}
 .cons-table{width:100%;font-size:13px;border-collapse:collapse}
 .cons-table td{padding:4px 6px;border-bottom:1px dashed var(--line)}
 .cons-table td:last-child{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -117,8 +91,6 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .ins-sub{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.7}
 .ins-sub b{color:var(--text)}
 .ye{border:1px dashed var(--line);border-radius:10px;padding:10px 14px;margin-top:12px;background:#fff}
-.ye-title{font-weight:600;font-size:14px}
-.ye-title .muted{font-weight:400;margin-left:8px}
 .fold{margin-top:12px}
 .fold summary{cursor:pointer;font-size:13px;color:var(--blue);font-weight:500;padding:4px 0}
 .fold[open] summary{margin-bottom:6px}
@@ -256,6 +228,16 @@ td.ops{white-space:nowrap;text-align:right}
 .tbl tr.sub-total td{background:#fafbfe;font-weight:600}
 #paramCard .form-grid{grid-template-columns:1fr}
 #paramCard .field{gap:3px}
+/* ===== 页内提示 ===== */
+#toastRoot{position:fixed;bottom:16px;right:16px;z-index:100;display:flex;flex-direction:column-reverse;gap:8px;max-width:min(520px,92vw);pointer-events:none}
+.toast{display:flex;gap:10px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-left:4px solid var(--green);border-radius:10px;padding:10px 12px;box-shadow:0 10px 30px rgba(15,23,42,.16);font-size:13px;line-height:1.7;pointer-events:auto;animation:tin .2s}
+.toast.info{border-left-color:var(--blue)} .toast.warn{border-left-color:var(--amber)}
+.toast-body{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;max-height:50vh;overflow:auto}
+.toast-x{flex-shrink:0;border:none;background:none;color:var(--muted);font-size:16px;line-height:1.2;cursor:pointer;padding:0 2px}
+.toast-x:hover{color:var(--text)}
+.toast.out{opacity:0;transition:opacity .25s}
+@keyframes tin{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.mini-bar .fill.f-green{background:var(--green)} .mini-bar .fill.f-red{background:var(--red)}
 @media(max-width:1100px){.grid-2{grid-template-columns:1fr}}
 @media print{.tabs,.topbar .banner,.btn{display:none!important}body{background:#fff}}
 </style>
@@ -354,4 +336,5 @@ td.ops{white-space:nowrap;text-align:right}
     </div>
   </section>
 </main>
+<div id="toastRoot"></div>
 <div id="modalRoot"></div>

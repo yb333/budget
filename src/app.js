@@ -36,8 +36,22 @@ function fmtCny(v) {
   if (a >= 10000) { let t = (a / 10000).toFixed(2); if (t.indexOf('.') >= 0) t = t.replace(/0+$/, '').replace(/\.$/, ''); return sign + '¥' + t + '万'; }
   return sign + '¥' + Math.round(a).toLocaleString('zh-CN');
 }
-const fmtUsd = v => (v == null || Number.isNaN(v)) ? '—' : '$' + Number(v).toLocaleString('en-US');
 const fmtPct = v => (v == null || !Number.isFinite(v)) ? '—' : (v * 100).toFixed(1) + '%';
+/* ---- 页内提示（代替阻塞式弹窗）：右上角冒出来，不打断操作。短的几秒后自己消失，长的（导入日志之类）留着，看完点 × ---- */
+function notify(msg, kind) {
+  const root = $('#toastRoot'); if (!root) return;
+  const text = String(msg == null ? '' : msg).replace(/<[^>]+>/g, '');
+  const long = text.length > 90 || /\n/.test(text.trim());
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || (long ? 'info' : 'ok'));
+  el.innerHTML = '<div class="toast-body">' + esc(text) + '</div><button class="toast-x" title="关闭">×</button>';
+  root.appendChild(el);
+  const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 250); };
+  el.querySelector('.toast-x').onclick = close;
+  if (!long) setTimeout(close, 5000);
+  while (root.children.length > 4) root.firstChild.remove();
+}
+const warn = msg => notify(msg, 'warn');
 function daysBetween(a, b) {
   const d1 = new Date(a + 'T00:00:00'), d2 = new Date(b + 'T00:00:00');
   if (isNaN(d1) || isNaN(d2)) return null;
@@ -183,7 +197,7 @@ async function loadFromHandle(h, silent) {
   fileHandle = h; recentHandle = h; fileConnected = true;
   try { await idbSet('fh', h); } catch (e) { }
   state = data; saveSilent(); renderAll();
-  if (!silent) alert('已载入 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
+  if (!silent) notify('已载入 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
   const b = $('#quickLoadBtn'); if (b) b.style.display = 'none';
 }
 // 数据集文件夹：一级子文件夹名 = 花钱项目标识（文件的项目归属靠它，不靠程序猜测）；根目录下的文件不属于任何项目
@@ -199,7 +213,7 @@ function fileSnapDate(f) {
   try { const d = new Date(f.lastModified || Date.now()); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); } catch (e) { return todayStr(); }
 }
 async function setDatasetDir() {
-  if (!window.showDirectoryPicker) { alert('当前浏览器不支持选择文件夹（请用 Chrome/Edge）'); return; }
+  if (!window.showDirectoryPicker) { warn('当前浏览器不支持选择文件夹（请用 Chrome/Edge）'); return; }
   try { dirHandle = await window.showDirectoryPicker({ mode: 'read' }); }
   catch (e) { return; }
   try { await idbSet('dir', dirHandle); } catch (e) { }
@@ -230,15 +244,15 @@ function pickScanFiles(files, known, sigOf, verNeed) {
   }).map(it => Object.assign({}, it, { _new: known[sigOf(it)] == null }));
 }
 async function scanDataset(manual, force) {
-  if (!dirHandle) { if (manual) alert('请先设置数据集文件夹'); return false; }
+  if (!dirHandle) { if (manual) warn('请先设置数据集文件夹'); return false; }
   let perm = 'granted';
   try { perm = await dirHandle.queryPermission({ mode: 'read' }); } catch (e) { }
   if (perm !== 'granted') {
     try { perm = await dirHandle.requestPermission({ mode: 'read' }); } catch (e) { }
-    if (perm !== 'granted') { if (manual) alert('未授权读取该文件夹'); return false; }
+    if (perm !== 'granted') { if (manual) warn('未授权读取该文件夹'); return false; }
   }
   const files = [];
-  try { await walkDir(dirHandle, files); } catch (e) { if (manual) alert('读取文件夹失败：' + e.message); return false; }
+  try { await walkDir(dirHandle, files); } catch (e) { if (manual) warn('读取文件夹失败：' + e.message); return false; }
   let known = {};
   try { known = JSON.parse(localStorage.getItem('budgetDash.dataset') || '{}'); } catch (e) { }
   const sigOf = it => it.project + '|' + it.file.name + '|' + it.file.size + '|' + it.file.lastModified;   // 含所在文件夹：挪动过 = 新文件
@@ -261,7 +275,7 @@ async function scanDataset(manual, force) {
     const msg = left.length
       ? '看板更新了 ' + left.map(k => PARSE_NAME[k]).join('、') + ' 的解析规则，但数据集文件夹里没有这类文件——它们以前是手动导入的，请用「导入平台数据」重新导入一次'
       : (verNeed.length ? '' : '数据集文件夹里没有新文件（识别到的 ' + files.length + ' 个文件都已导入过）');
-    if (manual && msg) alert(msg);
+    if (manual && msg) notify(msg);
     return false;
   }
   const nNew = todo.filter(it => it._new).length;
@@ -277,7 +291,7 @@ async function scanDataset(manual, force) {
   const head = reRead.length
     ? '🔄 看板更新了 ' + reRead.map(k => PARSE_NAME[k]).join('、') + ' 的解析规则，已按新规则重新读取数据集里的文件' + (nNew ? '（同时导入了 ' + nNew + ' 个新文件）' : '') + (left.length ? '\n⚠️ ' + left.map(k => PARSE_NAME[k]).join('、') + '以前是手动导入的，数据集里没有，需要用「导入平台数据」重新导入一次' : '')
     : '📁 数据集自动导入完成';
-  alert(head + '：\n\n' + r.text + '\n\n快照日期按文件导出时间记录。');
+  notify(head + '：\n\n' + r.text + '\n\n快照日期按文件导出时间记录。');
   return true;
 }
 async function importFilesAuto(items, opts) {
@@ -493,7 +507,7 @@ async function openDataFile() {
   if (window.showOpenFilePicker) {
     try {
       const [h] = await window.showOpenFilePicker({ types: [{ description: '预算看板数据（JSON）', accept: { 'application/json': ['.json'] } }] });
-      try { await loadFromHandle(h); } catch (e) { alert('载入失败：' + e.message); }
+      try { await loadFromHandle(h); } catch (e) { warn('载入失败：' + e.message); }
       return;
     } catch (e) { if (e && e.name === 'AbortError') return; /* 回退到 input */ }
   }
@@ -1156,20 +1170,20 @@ function execDiagnose(f) {
   } catch (e) { return '<div class="cons-diff warn">🔍 解析失败：' + esc(e.message) + '</div>'; }
 }
 async function importAll() {
-  if (!importCtx || !importCtx.files.length) { alert('请先添加文件'); return; }
+  if (!importCtx || !importCtx.files.length) { warn('请先添加文件'); return; }
   const bad = importCtx.files.find(f => f.error || !f.kind);
-  if (bad) { alert('有文件未能识别，请先处理：\n' + (bad.error || bad.name + ' 未选择类型')); return; }
+  if (bad) { warn('有文件未能识别，请先处理：\n' + (bad.error || bad.name + ' 未选择类型')); return; }
   const noProj = importCtx.files.find(f => f.kind === 'exec' && !(f.project || '').trim());
-  if (noProj) { alert('执行表「' + noProj.name + '」还没有指定花钱项目——执行表没有项目列，请在文件旁填写它属于哪个花钱项目（子文件夹名）。'); return; }
+  if (noProj) { warn('执行表「' + noProj.name + '」还没有指定花钱项目——执行表没有项目列，请在文件旁填写它属于哪个花钱项目（子文件夹名）。'); return; }
   const noProjG = importCtx.files.find(f => f.kind === 'grants' && !(f.project || '').trim());
-  if (noProjG) { alert('预算授予「' + noProjG.name + '」还没有指定花钱项目——预算授予是按花钱项目导出的，请在文件旁填写它属于哪个花钱项目。'); return; }
+  if (noProjG) { warn('预算授予「' + noProjG.name + '」还没有指定花钱项目——预算授予是按花钱项目导出的，请在文件旁填写它属于哪个花钱项目。'); return; }
   const snapDate = ($('#snapDate') && $('#snapDate').value) || importCtx.snapDate || todayStr();
   const items = importCtx.files.map(f => ({ name: f.name, kind: f.kind, rows: f.rows, sheets: f.sheets, project: (f.project || '').trim(), snapDate }));
   const r = importParsed(items);
   if (r.touched) recordImportLog(calc());
   parseVerMark(r.kinds);   // 手动导入的数据是按当前规则解析的
   save(); closeModal();
-  alert('导入完成：\n\n' + r.text + (r.touched ? '\n\n所有指标已自动重算。' : ''));
+  notify('导入完成：\n\n' + r.text + (r.touched ? '\n\n所有指标已自动重算。' : ''));
 }
 
 /* ================= 计算引擎 ================= */
@@ -2960,7 +2974,7 @@ function saveParams() {
   else if (!(bo >= 0 && bo <= 12)) msg = '年终奖扣减应在 0~12 个月';
   else if (!(fq >= 1 && fq <= 60)) msg = '更新提醒应在 1~60 天';
   else if (!Number.isFinite(at) || at < 0.5 || at > 1.5) msg = '出勤系数应在 0.5~1.5';
-  if (msg) { alert(msg + '，已恢复成原来的值'); renderAll(); return false; }
+  if (msg) { warn(msg + '，已恢复成原来的值'); renderAll(); return false; }
   const yp = yearParams(curYear());
   state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' });
   state.meta.updateFreqDays = fq;
@@ -3168,7 +3182,7 @@ function closeModal() { $('#modalRoot').innerHTML = ''; document.body.style.over
 const field = (label, inner) => '<label class="field"><span class="field-label">' + label + '</span>' + inner + '</label>';
 
 function planModal(p) {
-  const isNew = !p;
+  const isNew = !p || !!p._new;
   p = p || { name: '', code: '', amountW: '', note: '' };
   openModal('<h3>' + (isNew ? '新增规划项' : '编辑规划项') + '</h3><div class="form-grid">' +
     field('规划名称（年初口径）', '<input id="f-name" type="text" value="' + esc(p.name) + '">') +
@@ -3207,7 +3221,7 @@ function renderPlanPastePreview() {
 }
 function planPasteGo(mode) {
   const rows = parsePlanLines($('#pastePlans').value);
-  if (!rows.length) { alert('未识别到任何规划项，检查格式：名称, 金额USD[, 编码]'); return; }
+  if (!rows.length) { warn('未识别到任何规划项，检查格式：名称, 金额USD[, 编码]'); return; }
   const Y = curYear();
   if (mode === 'replace') {
     if (plansOf(Y).length && !confirm('替换将覆盖 ' + Y + ' 年现有 ' + plansOf(Y).length + ' 项规划（按名称保留编码关联），确认？')) return;
@@ -3222,7 +3236,7 @@ function planPasteGo(mode) {
     rows.forEach(r => state.plans.push({ id: uid(), year: Y, code: r.code, name: r.name, amountW: r.amountW, target: r.target, note: '' }));
   }
   touch('plan'); save(); closeModal();
-  alert('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 项规划（' + Y + ' 年）。');
+  notify('已' + (mode === 'replace' ? '替换' : '追加') + ' ' + rows.length + ' 项规划（' + Y + ' 年）。');
 }
 function parseTeamLines(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
@@ -3260,7 +3274,7 @@ async function saveToDataFile() {
     const blob = new Blob([JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = 'budget.json'; a.click(); URL.revokeObjectURL(a.href);
-    alert('当前浏览器不支持直接写文件，已下载 budget.json——请手动覆盖到仓库 data/ 目录。');
+    warn('当前浏览器不支持直接写文件，已下载 budget.json——请手动覆盖到仓库 data/ 目录。');
     return;
   }
   try {
@@ -3277,8 +3291,8 @@ async function saveToDataFile() {
     return;
   }
   const ok = await writeThroughNow();
-  if (ok) alert('已写入 ' + (fileHandle.name || 'budget.json') + '。\n\n✅ 此后<b>每次变更自动同步写入</b>该文件（无需再点本按钮），数据随 git 走，清浏览器也不丢。'.replace(/<[^>]+>/g, ''));
-  else alert('写入失败（权限可能已过期）：数据仍在浏览器缓存中，点顶部「📂 载入数据文件」重连后再试。');
+  if (ok) notify('已写入 ' + (fileHandle.name || 'budget.json') + '。\n\n✅ 此后<b>每次变更自动同步写入</b>该文件（无需再点本按钮），数据随 git 走，清浏览器也不丢。'.replace(/<[^>]+>/g, ''));
+  else warn('写入失败（权限可能已过期）：数据仍在浏览器缓存中，点顶部「📂 载入数据文件」重连后再试。');
 }
 function exportModal() {
   openModal('<h3>分层备份</h3>' +
@@ -3311,7 +3325,7 @@ function exclModal() {
 }
 function linkModal() {
   const c = calc();
-  if (!c.snap) { alert('请先导入执行表'); return; }
+  if (!c.snap) { warn('请先导入执行表'); return; }
   const unlinked = plansOf(curYear()).filter(p => !p.code);
   const rowsHtml = c.codes.map(code => {
     const s = c.per[code];
@@ -3448,12 +3462,12 @@ async function handleAction(action, el, e) {
     const c0 = calc();
     const row = c0.poList.find(r => r.poNo === el.dataset.key);   // 挂靠按 PO 编号整张剔除（含它在各花钱项目下的行）
     if (!row) return;
-    if (!confirm('将 PO「' + (row.resName || row.poNo) + '」剔除出决策？\n\n影响：不再出现在你的 PO 台账/在途冻结/预计返还/月度图/PO 建议里（比如不再算作下月"已下"的 PO，也不计入"近 3 月实际"）；其已执行金额仍计入执行率，未关闭的部分今年还会执行的金额计入对应预算来源的年底执行（平台口径，钱确实从预算花了）。适用于挂靠的 PO、不属于团队月度消耗的 PO。可随时在 PO 台账恢复。'.replace(/<[^>]+>/g, ''))) return;
     const yp = yearParams(curYear());
     yp.excludedPos = yp.excludedPos || [];
     if (yp.excludedPos.indexOf(el.dataset.key) < 0) yp.excludedPos.push(el.dataset.key);
     state.years[curYear()] = yp;
     save();
+    notify('已把 PO「' + (row.resName || row.poNo) + '」剔除出决策：不再抵下月的 PO；已执行的和今年还会花掉的仍计入执行率。想恢复：PO 台账，或数据管理 → 决策设置');
     return;
   }
   if (action === 'po:exclDel') {
@@ -3477,12 +3491,12 @@ async function handleAction(action, el, e) {
   if (action === 'excl:add') {
     const c0 = calc();
     const name = (c0.snap && c0.snap.rows[id] && c0.snap.rows[id].name) || id;
-    if (!confirm('剔除「' + name + ' [' + id + ']」？\n\n剔除后：该预算来源的执行/可用/剩余、以及花它的钱的 PO，全部不参与看板计算（' + c0.Y + ' 年度生效）。\n数据仍保留在快照中，可随时恢复。')) return;
     const yp = yearParams(curYear());
     yp.excluded = yp.excluded || [];
     if (yp.excluded.indexOf(id) < 0) yp.excluded.push(id);
     state.years[curYear()] = yp;
     save();
+    notify('已剔除预算来源「' + name + '」：它的执行、可用、剩余和花它的钱的 PO 都不参与计算。想恢复：数据管理 → 决策设置');
     return;
   }
   if (action === 'excl:del') {
@@ -3496,15 +3510,14 @@ async function handleAction(action, el, e) {
   if (action === 'excl:manage') return exclModal();
   if (action === 'dataset:scan') return scanDataset(true);
   if (action === 'dataset:rescan') {
-    if (!confirm('按当前的解析规则，把数据集文件夹里的文件全部重新读一遍？\n\n看板更新后如果怀疑数据还是旧的，可以用它。只重读平台数据和团队配置，不影响你手工录入的规划、目标和参数。')) return;
     return scanDataset(true, PARSE_KEYS.slice());
   }
   if (action === 'data:openRecent') {
     if (!recentHandle) return;
     try {
       const perm = await recentHandle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { await loadFromHandle(recentHandle); fileConnected = true; renderBanner(); } else alert('未授权访问文件');
-    } catch (e) { alert('载入失败：' + e.message); }
+      if (perm === 'granted') { await loadFromHandle(recentHandle); fileConnected = true; renderBanner(); } else warn('未授权访问文件');
+    } catch (e) { warn('载入失败：' + e.message); }
     return;
   }
   if (action === 'data:export') return exportModal();
@@ -3516,7 +3529,7 @@ async function handleAction(action, el, e) {
     $$('[data-wd]').forEach(inp => { const v = inp.value.trim(); if (v !== '') wd[+inp.dataset.wd] = +v; });
     const yp = yearParams(curYear());
     state.years[curYear()] = Object.assign({}, yp, { workdays: wd });
-    save(); alert('工作日已保存（' + curYear() + ' 年）');
+    save(); notify('工作日已保存（' + curYear() + ' 年）');
     return;
   }
 
@@ -3527,15 +3540,15 @@ async function handleAction(action, el, e) {
     try { localStorage.setItem('budgetDash.autobak', JSON.stringify({ t: todayStr() + ' ' + new Date().toTimeString().slice(0, 5), data: state })); } catch (e) { }
     plansAll.forEach(p => { p.amountW = Math.round(wusdOf(p) * 10000 * 10000) / 10000; });
     touch('plan'); save();
-    alert('已修复 ' + plansAll.length + ' 项规划金额（×10000）。请到规划表核对数值，小数位如与清单不符请手动改。');
+    notify('已修复 ' + plansAll.length + ' 项规划金额（×10000）。请到规划表核对数值，小数位如与清单不符请手动改。');
     return;
   }
   if (action === 'plan:dead') {
     const p = state.plans.find(x => x.id === id);
     if (!p) return;
-    if (!p.dead && !confirm('将「' + p.name + '」标记为失效（预算下不来）？\n\n影响：从执行率分母（总体+分来源）中剔除，不再催 BA；金额与历史数据保留，可随时恢复。')) return;
     p.dead = !p.dead;
     touch('plan'); save();
+    notify(p.dead ? '已把「' + p.name + '」标为失效：不计入执行率的分母、不再催 BA' : '已恢复「' + p.name + '」');
     return;
   }
   if (action === 'plan:add') return planModal(null);
@@ -3548,14 +3561,14 @@ async function handleAction(action, el, e) {
   }
   if (action === 'plan:save') {
     const name = $('#f-name').value.trim(), amountW = parseWusd($('#f-amount').value);
-    if (!name) { alert('请填写规划名称'); return; }
-    if (amountW == null || amountW <= 0) { alert('请填写有效的万美金金额（如 5.5）'); return; }
+    if (!name) { warn('请填写规划名称'); return; }
+    if (amountW == null || amountW <= 0) { warn('请填写有效的万美金金额（如 5.5）'); return; }
     const code = $('#f-code').value.trim(), note = $('#f-note').value.trim(), planProject = $('#f-pplanproject') ? $('#f-pplanproject').value.trim() : '';
     const tRaw = $('#f-target').value.trim();
     let target = null;
     if (tRaw !== '') {
       const tv = parseFloat(tRaw);
-      if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('执行率目标应为 0~100 的数字，或留空跟随年度默认'); return; }
+      if (!Number.isFinite(tv) || tv < 0 || tv > 100) { warn('执行率目标应为 0~100 的数字，或留空跟随年度默认'); return; }
       target = tv / 100;
     }
     if (id) Object.assign(state.plans.find(p => p.id === id), { name, amountW, code, target, note, planProject });
@@ -3572,8 +3585,8 @@ async function handleAction(action, el, e) {
     if (want >= 2000 && want <= 2100 && want !== curYear()) { state.meta.year = want; if (!state.years[want]) state.years[want] = defaultYearParams(); }
     const Y = curYear();
     const from = (state.plans.some(p => p.year === Y - 1) || (state.poDataByYear || {})[Y - 1] || state.execSnaps.some(s => inYear(s.date, Y - 1))) ? Y - 1 : (state.plans.length ? Math.max(...state.plans.map(p => p.year)) : null);
-    if (from == null) { alert('没有可复制的上一年数据，请直接录入规划'); return; }
-    if (state.plans.some(p => p.year === Y)) { alert(Y + ' 年已有规划，无需开启'); return; }
+    if (from == null) { warn('没有可复制的上一年数据，请直接录入规划'); return; }
+    if (state.plans.some(p => p.year === Y)) { warn(Y + ' 年已有规划，无需开启'); return; }
     if (!confirm('开启 ' + Y + ' 年度：复制 ' + from + ' 年的规划（编码关联沿用、金额可再调）与年度参数（团队配置共用），确认？')) return;
     plansOf(from).forEach(p => state.plans.push({ id: uid(), year: Y, code: p.code || '', name: p.name, amountW: wusdOf(p), target: p.target != null ? p.target : null, planProject: p.planProject || '', dead: false, note: '复制自' + from }));
     const ypFrom = yearParams(from);
@@ -3583,7 +3596,7 @@ async function handleAction(action, el, e) {
     state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '' });
     state.meta.lastHcCheck = '';   // 新年重新确认一次团队人数
     touch('plan'); save();
-    alert(Y + ' 年度已开启：规划 ' + plansOf(Y).length + ' 项已复制。请到「数据管理」核对金额与汇率，然后正常导入新年数据。');
+    notify(Y + ' 年度已开启：规划 ' + plansOf(Y).length + ' 项已复制。请到「数据管理」核对金额与汇率，然后正常导入新年数据。');
     return;
   }
   if (action === 'data:demo') {
@@ -3640,7 +3653,7 @@ document.addEventListener('change', e => {
     const v = e.target.value.trim();
     if (f === 'amountW') {
       const w = parseWusd(v);
-      if (w == null || w <= 0) { alert('金额无效（万美金，如 5.5）'); e.target.value = p.amountW != null ? p.amountW : ''; return; }
+      if (w == null || w <= 0) { warn('金额无效（万美金，如 5.5）'); e.target.value = p.amountW != null ? p.amountW : ''; return; }
       p.amountW = w;
     } else if (f === 'code') {
       p.code = v || '';
@@ -3648,7 +3661,7 @@ document.addEventListener('change', e => {
       p.planProject = v;
     } else if (f === 'target') {
       if (v === '') p.target = null;
-      else { const tv = parseFloat(v); if (!Number.isFinite(tv) || tv < 0 || tv > 100) { alert('目标应为 0~100 或留空'); e.target.value = p.target != null ? Math.round(p.target * 100) : ''; return; } p.target = tv / 100; }
+      else { const tv = parseFloat(v); if (!Number.isFinite(tv) || tv < 0 || tv > 100) { warn('目标应为 0~100 或留空'); e.target.value = p.target != null ? Math.round(p.target * 100) : ''; return; } p.target = tv / 100; }
     }
     touch('plan'); saveSilent();
     const cnyCell = $('#pcny-' + id2);
@@ -3673,10 +3686,7 @@ document.addEventListener('change', e => {
   if (e.target.matches('[data-linkcode]')) {
     const code = e.target.dataset.linkcode, v = e.target.value;
     if (v === '__new__') {
-      const name = prompt('新规划项名称（将关联平台编码 ' + code + '）：');
-      if (!name) { e.target.value = ''; return; }
-      const amt = parseWusd(prompt('金额（WUSD·万美金，如 5.5）：', '0') || '0') || 0;
-      state.plans.push({ id: uid(), year: curYear(), code, name, amountW: amt, note: '' });
+      planModal({ _new: true, code, name: '', amountW: '', note: '' }); return;   // 开规划弹窗新建一条，编码已经带上
     } else if (v) {
       const p = state.plans.find(x => x.id === v);
       if (p) p.code = code;
@@ -3699,18 +3709,18 @@ document.addEventListener('change', e => {
           state.plans = obj.plans || []; state.team = obj.team || [];
           if (obj.teamPlan) state.teamPlan = obj.teamPlan; if (obj.grantAttr) state.grantAttr = obj.grantAttr;
           if (obj.projAlias) state.projAlias = obj.projAlias;
-          save(); alert('配置已恢复');
+          save(); notify('配置已恢复');
         } else if (obj.type === 'budget-dash-data') {
           if (!confirm('恢复数据包：将覆盖执行表快照、PO明细和授予流水（不影响配置），确认？')) return;
           state.execSnaps = obj.execSnaps || []; state.poDataByYear = obj.poDataByYear || {}; state.grantLogs = obj.grantLogs || []; if (obj.grantData) state.grantData = obj.grantData; state.grantAttr = obj.grantAttr || {}; if (obj.changeLog) state.changeLog = obj.changeLog; if (obj.lastImportAt) state.lastImportAt = obj.lastImportAt; state.changes = null;
           if (obj.importLogs) state.importLogs = obj.importLogs; if (obj.projPrints) state.projPrints = obj.projPrints; if (obj.projAlias) state.projAlias = obj.projAlias;
-          save(); alert('数据已恢复');
+          save(); notify('数据已恢复');
         } else {
           if (!Array.isArray(obj.plans)) throw new Error('格式不符');
           if ((state.plans.length || state.execSnaps.length) && !confirm('导入全量包将覆盖当前全部数据，确认？')) return;
-          state = obj; save(); alert('恢复成功');
+          state = obj; save(); notify('恢复成功');
         }
-      } catch (err) { alert('导入失败：不是本看板导出的备份文件'); }
+      } catch (err) { warn('导入失败：不是本看板导出的备份文件'); }
     };
     reader.readAsText(f); e.target.value = '';
   }
