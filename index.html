@@ -252,6 +252,12 @@ td.ops{white-space:nowrap;text-align:right}
 .tbl-health.full{max-width:none}
 .tbl-steps tr.gap-row td{background:var(--amber-bg)}
 .preview-line{border:1px dashed var(--line);border-radius:10px;padding:8px 14px;margin-bottom:10px;background:#fbfcfe;font-size:13px;line-height:1.7}
+/* v1.10：年初规划表的下拉、还没挂的行、多对一的规划子行、跳转时闪一下 */
+.tbl-plan select.cell-in{padding:2px 4px;cursor:pointer}
+.tbl-plan tr.nomount td{background:#fffbe6}
+.tbl-health tr.sub-plan td{background:#fbfcfe;font-size:12px}
+.tbl tr.flash td{animation:rowFlash 1.8s}
+@keyframes rowFlash{0%,55%{background:var(--amber-bg)}100%{background:transparent}}
 #paramCard .form-grid{grid-template-columns:1fr}
 #paramCard .field{gap:3px}
 /* ===== 页内提示 ===== */
@@ -314,7 +320,6 @@ td.ops{white-space:nowrap;text-align:right}
     <div class="card">
       <div class="card-title">预算来源执行总览
         <span class="btn-row">
-          <button class="btn" data-action="link:manage">🔗 编码关联</button>
           <button class="btn primary" data-action="plan:add">＋ 新增规划项</button>
         </span>
       </div>
@@ -2281,36 +2286,81 @@ function calc() {
   /* ---- 钱够不够：按到账时间逐笔看。在途冻结的钱算进来，但按它回来的时间——
      现在可支配 →（每个月）下下月的 PO（20 号前后下单，只能用当时手里有的钱）→ 月底的 OD 扣减 → 返还到账
      往月 PO 的冻结：平时下个月就回来；年底按 12 月 15 日前到账。11 月这张 PO 多下的部分 12 月下旬才回来（赶得上 12/31 的清算，时间很紧）。
-     剔除出决策的 PO 的冻结不算（默认别的团队会花掉）。1 月 PO 是最后的优先级，不在这里算，另见「1 月 PO 缺口」 */
+     剔除出决策的 PO 的冻结不算（默认别的团队会花掉）。1 月 PO 是最后的优先级，不在这里算，另见「1 月 PO 缺口」
+     每笔标 near（这个月、下个月的，到下下月下 PO 为止）：这两个月里钱就不够的是眼下的风险，催 BA 的依据之一 ---- */
   const S = sum(srcRows, r => r.funds), P = sum(poMonths, p => p.need), D = odFuture;
-  const cash = { start: S, events: [], short: null, refundPast: sum(Object.values(refundPastW)), refundCur: sum(Object.values(refundCurW)) };
+  const cash = { start: S, events: [], short: null, shortNear: null, refundPast: sum(Object.values(refundPastW)), refundCur: sum(Object.values(refundCurW)) };
   if (started) {
     let avail = S;
-    const ev = (when, label, out, inn, note) => { avail += inn - out; cash.events.push({ when, label, out, inn, avail, note: note || '' }); if (!cash.short && avail < -500) cash.short = { when, label, short: -avail }; };
+    const ev = (when, label, out, inn, note, near) => {
+      avail += inn - out;
+      cash.events.push({ when, label, out, inn, avail, near: !!near, note: note || '' });
+      if (avail < -500) { const sh = { when, label, short: -avail, near: !!near }; if (!cash.short) cash.short = sh; if (near && !cash.shortNear) cash.shortNear = sh; }
+    };
     for (let mo = curM; mo <= 12; mo++) {
-      if (mo <= 11) { const pm = poMonths.find(p => p.mo === mo + 1); if (pm && pm.need > 0.5) ev(mo + '-20 前', '下 ' + (mo + 1) + ' 月 PO', pm.need, 0); }
+      const near = mo <= curM + 1;
+      if (mo <= 11) { const pm = poMonths.find(p => p.mo === mo + 1); if (pm && pm.need > 0.5) ev(mo + '-20 前', '下 ' + (mo + 1) + ' 月 PO', pm.need, 0, '', near); }
       if (curM >= 11) {
-        if (mo === 11) ev('11-30', '11 月底的 OD 扣减', odEst[mo] || 0, 0);
+        if (mo === 11) ev('11-30', '11 月底的 OD 扣减', odEst[mo] || 0, 0, '', near);
         if (mo === 12) {
-          if (cash.refundPast > 0.5) ev('12-15 前', '往月 PO 验收，冻结的钱返还', 0, cash.refundPast, '在途冻结');
-          if (cash.refundCur > 0.5) ev('12 月下旬', '11 月 PO 多下的部分验收返还', 0, cash.refundCur, '在途冻结 · 时间很紧');
-          ev('12-31', '年终清算', odEst[mo] || 0, 0);
+          if (cash.refundPast > 0.5) ev('12-15 前', '往月 PO 验收，冻结的钱返还', 0, cash.refundPast, '在途冻结', near);
+          if (cash.refundCur > 0.5) ev('12 月下旬', '11 月 PO 多下的部分验收返还', 0, cash.refundCur, '在途冻结 · 时间很紧', near);
+          ev('12-31', '年终清算', odEst[mo] || 0, 0, '', near);
         }
       } else {
-        if ((odEst[mo] || 0) > 0.5) ev(mo + ' 月底', mo + ' 月底的 OD 扣减', odEst[mo], 0);
-        if (mo === curM && cash.refundPast > 0.5) ev((mo + 1) + ' 月', '往月 PO 验收，冻结的钱返还', 0, cash.refundPast, '在途冻结');
-        if (mo === curM + 1 && cash.refundCur > 0.5) ev((mo + 1) + ' 月', curM + ' 月这张 PO 多下的部分返还', 0, cash.refundCur, '在途冻结');
+        if ((odEst[mo] || 0) > 0.5) ev(mo + ' 月底', mo + ' 月底的 OD 扣减', odEst[mo], 0, '', near);
+        if (mo === curM && cash.refundPast > 0.5) ev((mo + 1) + ' 月', '往月 PO 验收，冻结的钱返还', 0, cash.refundPast, '在途冻结', near);
+        if (mo === curM + 1 && cash.refundCur > 0.5) ev((mo + 1) + ' 月', curM + ' 月这张 PO 多下的部分返还', 0, cash.refundCur, '在途冻结', near);
       }
     }
   }
   const fund = { total: S, poNeed: P, odNeed: D, short: cash.short ? cash.short.short : 0, when: cash.short ? cash.short.when : '', cash };   // short：按到账时间算，第一个不够的时间点差多少
 
-  // 催 BA：缺口 > 可支配 + 今年能用上的返还；零头不算（差额在规划 0.5% 以内且不超过 ¥3,000 的不提示）
-  const baList = srcRows.filter(r => r.assessed && r.gap > r.funds + (r.refundUsable || 0) + r.tol).map(r => {
-    const short = r.gap - r.funds - (r.refundUsable || 0);
-    const perMonth = Math.max(needPo(Math.min(Math.max(curM, 1), 12)), 1);
-    return { code: r.code, name: r.decName, gap: r.gap, short, kind: r.notGranted ? '未授予' : '授予不足', latest: Math.max(Math.min(curM, 11) + 1, 12 - Math.ceil(short / perMonth)) };
+  /* ---- 到账（按规划看）。已到账 = 往年结转 + 本年度授予——执行表的「可用预算」就是这两列相加；结转被收回时平台上这个数会变小，下次导入自动体现。
+         未到账 = 规划金额 − 已到账。这是催 BA 的唯一依据：「已规划、还没申请到账的钱」。
+         PO 冻结的钱是已经到账的，只是被冻住了，归「催验收」——和催 BA 是两件事。
+         多条规划挂同一个 IT 预算项时，钱在平台上是合在一起的：合计按 IT 预算项算；要分到每条规划，只能靠平台授予流水（授予单号）里的「归哪条规划」 ---- */
+  const flowRows = {};
+  Object.values((state.grantData || {}).byProject || {}).forEach(g => (g.rows || []).forEach(r => { if (r.code) (flowRows[r.code] = flowRows[r.code] || []).push(r); }));
+  const gAttr = state.grantAttr || {};
+  const planGrant = {};      // 规划 id → { got 已到账, plan 规划金额, un 未到账, tol 零头, split 能不能按规划拆, noAttr 这一项里还没选归属的授予 }
+  const noAttrByCode = {};   // IT 预算项 → 授予流水里还没选「归哪条规划」的金额
+  const livePlans = plansY.filter(p => !p.dead && wusdOf(p) > 0);
+  livePlans.forEach(p => {
+    const pc = wusdOf(p) * 10000 * fx, skip = !!(p.code && excl.indexOf(p.code) >= 0), s = (p.code && !skip) ? per[p.code] : null;
+    const mates = p.code ? livePlans.filter(q => q.code === p.code) : [];
+    planGrant[p.id] = { got: s ? Math.min(s.avail, pc) : 0, plan: pc, un: s ? Math.max(0, pc - s.avail) : pc, tol: Math.min(3000, pc * 0.005),
+      split: mates.length <= 1 || !!(flowRows[p.code] || []).length, noAttr: 0 };
   });
+  Object.keys(flowRows).forEach(code => {   // 多对一：按授予流水里的归属分到每条规划
+    const ps = livePlans.filter(q => q.code === code);
+    if (ps.length <= 1) return;
+    ps.forEach(q => { planGrant[q.id].got = 0; });
+    flowRows[code].forEach(r => {
+      const amt = r.total || ((r.itw || 0) + (r.od || 0)), g = planGrant[gAttr[r.docNo + '|' + code]];
+      if (g) g.got += amt; else noAttrByCode[code] = (noAttrByCode[code] || 0) + amt;
+    });
+    ps.forEach(q => { const g = planGrant[q.id]; g.got = Math.min(g.got, g.plan); g.un = Math.max(0, g.plan - g.got); g.noAttr = noAttrByCode[code] || 0; });
+  });
+  const baUnits = [];        // 催 BA 的单位：一条规划独占一个 IT 预算项 → 这条规划；多条共用 → 这个 IT 预算项（钱是合在一起的）
+  const seenCode = {};
+  livePlans.forEach(p => {
+    if (p.code && (seenCode[p.code] || excl.indexOf(p.code) >= 0)) return;
+    if (p.code) seenCode[p.code] = 1;
+    const s = p.code ? per[p.code] : null, group = p.code ? livePlans.filter(q => q.code === p.code) : [p];
+    const plan = sum(group, q => planGrant[q.id].plan), got = s ? Math.min(s.avail, plan) : 0;
+    baUnits.push({ code: p.code || '', name: group.length > 1 ? (s ? s.name : p.name) : p.name, plans: group, plan, got, un: Math.max(0, plan - got), tol: Math.min(3000, plan * 0.005), shared: group.length > 1, onPlat: !!s });
+  });
+  // 催 BA 的待办只在两种情况下出现（用户 2026-11-25 定）：① 到账进度比时间进度落后 10 个百分点以上；② 两个月内手里的钱就不够（到下下月下 PO 为止）。
+  // 没到账的金额平时一直显示在规划行和预算来源页上，不出待办。没导入平台数据时不知道到账多少，不催
+  const perMonth = Math.max(needPo(Math.min(Math.max(curM, 1), 12)), 1);
+  const baList = (snap && started) ? baUnits.filter(u => u.un > u.tol && (u.got / u.plan < timeProg - 0.1 || cash.shortNear)).map(u => ({
+    code: u.code, name: u.name, plan: u.plan, got: u.got, short: u.un, pct: u.got / u.plan, shared: u.shared, onPlat: u.onPlat,
+    behind: u.got / u.plan < timeProg - 0.1, latest: Math.max(Math.min(curM, 11) + 1, 12 - Math.ceil(u.un / perMonth))   // 最晚到账月：再晚就来不及靠 PO 花掉
+  })).sort((a, b) => b.short - a.short) : [];
+  const ungrantedTotal = sum(baUnits, u => u.un);
+  srcRows.forEach(r => { const u = baUnits.find(x => r.notGranted ? x.plans.some(q => q.id === r.plan.id) : (r.code && x.code === r.code)); r.un = u ? u.un : 0; });   // 这一行对应的钱里还有多少没到账
+shortList.forEach(x => { const r = srcRows.find(y => y.code === x.code && y.decName === x.name); x.un = r ? r.un : 0; });
   const excessOd = Math.max(0, odRemainTotal - D);   // 多余 OD 额度：年底花不掉，需调回
 
   /* ---- 本月指令 ---- */
@@ -2450,7 +2500,7 @@ function calc() {
       exclExec: poExclWill,   // 剔除出决策的 PO 还会执行的（别的团队在花，计入年底执行）
       yearPlan,               // 年底资金安排：每个钱包的进出、留给 1 月的理论上限
       refundCur: sum(Object.values(refundCurW)),   // 11 月这张 PO 多下的部分（12 月下旬验收后返还，只用于 1 月 PO）
-      baList,
+      baList, baUnits, planGrant, ungrantedTotal,   // 催 BA 只看规划了还没到账的钱（见上）
       // 在途识别结果（本月）
       inflight: { fc: curFc, willExec: curWillExec, over: curOver, k: kNeed, need: teamNeedAsOf, bySrc: Object.keys(willExecByCode).map(c => ({ code: c, name: per[c] ? per[c].name : c, fc: sum(poList.filter(r => r.budgetCode === c), r => info.get(r).cur) })).filter(x => x.fc > 0) },
       // 推演汇总
@@ -2464,22 +2514,8 @@ function calc() {
   const odHistTh = normalAll.slice(-3).map(([mo]) => odCostAt(Y, Math.max(+mo - 1, 1)));
   const calibOd = (hasOdCfg && odAvg > 0) ? ((odHistTh.length ? sum(odHistTh) / odHistTh.length : theoryOd) - odAvg) / odAvg : null;
 
-  // 授予进度（催 BA）
+  // 到账进度（总体）：已到账 ÷ 规划合计
   const grantProg = planCnyTotal > 0 ? availTotal / planCnyTotal : null;
-  const grantWarn = [];
-  odOverList.forEach(code => {
-    const s = per[code];
-    grantWarn.push({ name: (s.plan ? s.plan.name : s.name) + ' OD', msg: 'OD 已执行 ' + fmtCny(s.odExec) + ' > 可用 ' + fmtCny(s.odAvail) + '——调拨不足，请增加 OD 额度' });
-  });
-  plansY.forEach(p => {
-    if (p.dead) return;   // 失效（预算下不来）：不再催BA
-    if (!p.code || !per[p.code]) {
-      if (wusdOf(p) > 0 && curM >= 3 && (!p.code || !snap || !snap.rows[p.code])) grantWarn.push({ name: p.name, msg: curM >= 3 ? '平台未见授予' : '' });
-      return;
-    }
-    const s = per[p.code], pc = wusdOf(p) * 10000 * fx;
-    if (pc > 0 && s.avail / pc < timeProg - 0.1) grantWarn.push({ name: p.name, msg: '授予 ' + fmtPct(s.avail / pc) + '（时间进度 ' + fmtPct(timeProg) + '）' });
-  });
 
   // 交叉校验
   const checks = [];
@@ -2505,7 +2541,7 @@ function calc() {
     Y, fx, snaps, snap, po, poList, excluded: excl, codes, per, plansY, unmatched, planCnyTotal, poDecision, itwExec, odExec, execTotal, execRate, weightedTarget,
     timeProg, curM, poMonthlyAct, poMonthlyFc, poActByCode, poFrozen, poReturn, openCnt,
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
-    grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
+    grantProg, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode, poExclWill, poExclFrozen, poExclAgg, poExclWillM,
     workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
       basePo, otCost, needPo, cushionPo, advisePo, attendOf, isFest, attN, attF, otPeople, otSkip,   // PO 月度需求：消耗 = basePo × 出勤系数；建议金额 = advisePo
@@ -2576,6 +2612,16 @@ function miniBar(now, target, timeProg, fore, foreCls) {
 }
 const odWhatOf = mo => mo === 12 ? '年终清算：11 月 + 12 月 + 年终奖' : mo === 6 ? '上半年清算：5 月 + 6 月' : (mo - 1) + ' 月的费用';   // 某个月底扣的是什么
 
+// 钱不够时先做什么——两件事分开说：规划了还没到账的催 BA（按规划看）；已经到账、冻在 PO 里的催验收
+function moneyWhy(c, d) {
+  if (!d) return '';
+  const parts = [];
+  if (d.ungrantedTotal > 1000) parts.push('规划了还没到账 <b>' + fmtCny(d.ungrantedTotal) + '</b>（催 BA）');
+  const frozen = d.fund.cash.refundPast + d.fund.cash.refundCur;
+  if (frozen > 1000) parts.push('冻在 PO 里 <b>' + fmtCny(frozen) + '</b>（验收后回来，催验收）');
+  return parts.join('；');
+}
+
 // 待办与提醒：把原来分散在摘要条、风险区、决策卡、行动清单里的同一件事归成两份——
 //   待办 = 有明确动作的（按先后排，带时间和金额）；提醒 = 不用去操作系统、但要知道的
 function buildAgenda(c, d, m) {
@@ -2583,6 +2629,7 @@ function buildAgenda(c, d, m) {
   const P = d && d.po, J = d && d.jan, O = d && d.od, I = d && d.inflight;
   const add = t => todos.push(t);
   const freq = state.meta.updateFreqDays || 14;
+  const why = moneyWhy(c, d);   // 钱不够时先做什么：没到账的催 BA、冻结的催验收，分开说（没有推演结果时是空串）
   if (d) {
     /* ① PO：1–11 月是下月的 PO；12 月是下旬下明年 1 月的 */
     if (d.isDec) {
@@ -2591,7 +2638,7 @@ function buildAgenda(c, d, m) {
     } else if (P && P.toIssue > 0) {
       const noFund = Math.max(0, P.toIssue - P.funded);
       add({ key: 'po:' + P.nextM + ':' + P.toIssue, due: c.curM + '-20 前', title: '下 <b>' + P.nextM + ' 月 PO</b>', amt: fmtCny(P.toIssue), lv: noFund > 1000 ? 'red' : '',
-        note: '团队需求 ' + fmtCny(P.need) + (P.issued > 0 ? '，已下 ' + fmtCny(P.issued) : '') + (noFund > 1000 ? '；<span style="color:var(--red)">其中 ' + fmtCny(Math.round(noFund / 1000) * 1000) + ' 没有钱可出——先催 BA / 催验收</span>' : '，金额和比例见下方'), goto: 'opsPo' });
+        note: '团队需求 ' + fmtCny(P.need) + (P.issued > 0 ? '，已下 ' + fmtCny(P.issued) : '') + (noFund > 1000 ? '；<span style="color:var(--red)">其中 ' + fmtCny(Math.round(noFund / 1000) * 1000) + ' 没有钱可出' + (why ? '——' + why : '') + '</span>' : '，金额和比例见下方'), goto: 'opsPo' });
     }
     /* 下 PO 之前：先把用不到的 OD 额度调回 IT外包 */
     [P ? { x: P, due: '下 PO 前' } : null, d.isDec ? { x: J, due: '下 1 月 PO 前' } : null].filter(Boolean).forEach(o => {
@@ -2599,7 +2646,7 @@ function buildAgenda(c, d, m) {
     });
     /* ② OD：这个月底的扣减是必做的；往后各月是提醒（可顺手一起调） */
     if (c.odOverList.length) add({ key: 'odOver', due: '立即', lv: 'red', title: '<b>OD 额度已经不足</b>，马上调拨', note: c.odOverList.map(code => esc(c.per[code].name) + ' 已执行 ' + fmtCny(c.per[code].odExec) + ' > 可用 ' + fmtCny(c.per[code].odAvail)).join('；') + '——否则会落到「费用先结算至PO受益部门」' });
-    if (O.curShort > 0.5) add({ key: 'odShort:' + Math.round(O.curShort), due: c.curM + ' 月底', lv: 'red', title: '月底 OD 扣减缺 <b>' + fmtCny(O.curShort) + '</b>，且没有钱可调', note: odWhatOf(c.curM) + '要扣 ' + fmtCny(O.curNeed) + '——先催 BA 到账 / 催验收返还', goto: 'opsOd' });
+    if (O.curShort > 0.5) add({ key: 'odShort:' + Math.round(O.curShort), due: c.curM + ' 月底', lv: 'red', title: '月底 OD 扣减缺 <b>' + fmtCny(O.curShort) + '</b>，且没有钱可调', note: odWhatOf(c.curM) + '要扣 ' + fmtCny(O.curNeed) + '——' + (why || '先核对可支配的钱是不是都算上了'), goto: 'opsOd' });
     else if (O.curXferAll > 0) add({ key: 'odCur:' + Math.round(O.curXferAll), due: c.curM + ' 月底', lv: 'amber', title: '<b>OD 调拨</b>（IT外包 → OD）', amt: fmtCny(O.curXferAll), note: '赶在月底扣减前；' + odWhatOf(c.curM) + '要扣 ' + fmtCny(O.curNeed) + (c.hasProj ? '，挂在 ' + esc(O.anchorCur) : '') + '，从哪几个预算项调见明细', goto: 'opsOd' });
     const noMoney = O.plans.filter(p => p.left > 0.5), splitMo = O.plans.filter(p => p.otherProj.length);
     const futT = O.futureXfer + O.futureRefund, futRef = O.futureRefund, futCur = sum(O.lateRefund, p => p.refundCur);   // 往后各月一共要转到 OD 的钱；其中靠验收返还的、靠 11 月 PO 的
@@ -2610,27 +2657,31 @@ function buildAgenda(c, d, m) {
         (O.futureXfer > 500 ? '从 IT外包 调 ' + fmtCny(O.futureXfer) : '') +
         (futRef > 500 ? (O.futureXfer > 500 ? '；' : '') + '验收返还到账后再调 ' + fmtCny(futRef) + '（往月 PO 的 ' + fmtCny(futRef - futCur) + ' 要到 12 月 15 日前' + (futCur > 500 ? '、11 月 PO 多下的 ' + fmtCny(futCur) + ' 要到 12 月下旬——时间很紧' : '') + '）' : '') +
         (O.futureUsed > 500 ? (futT > 500 ? '；' : '') + '其余 ' + fmtCny(O.futureUsed) + ' 用现有的 OD 额度' : '') +
-        (noMoney.length ? '——先把往月 PO 验收掉让钱回来，或催 BA 到账' : (O.futureXfer > 1000 ? '——现在能调的可以这个月顺手一起调；等返还的那部分到账前调不了' : '')), goto: 'opsOd' });
+        (noMoney.length ? '——' + (why || '先把往月 PO 验收掉让钱回来') : (O.futureXfer > 1000 ? '——现在能调的可以这个月顺手一起调；等返还的那部分到账前调不了' : '')), goto: 'opsOd' });
     const splitWhy = p => p.otherGap > 500 ? '那边有还缺口的来源，这笔钱只有 OD 这一条路' + (p.other - p.otherGap > 500 ? '；挂在的项目里的钱也不够' : '') : '挂在的项目里的钱不够';
     if (splitMo.length) add({ key: 'odSplit:' + splitMo.map(p => p.mo).join(',') + ':' + splitMo.map(p => Math.round(sum(p.otherProj, x => x.amt))).join(','), due: splitMo[0].mo + ' 月底', lv: 'amber', title: '<b>OD 要挂到两个项目</b>', amt: fmtCny(sum(splitMo, p => sum(p.otherProj, x => x.amt))), note: '系统算下来，' + splitMo.map(p => p.mo + ' 月要把 ' + fmtCny(sum(p.otherProj, x => x.amt)) + ' 挂到 ' + p.otherProj.map(x => esc(x.proj)).join('、')).join('；') + '（' + splitMo.map(p => p.mo + '月：' + splitWhy(p)).join('；') + '）。执行率优先于只挂一个项目；怎么挂见明细', goto: 'opsOd' });
-    /* ③ 催 BA */
-    const grantBehind = c.grantProg != null && c.grantProg < c.timeProg - 0.1;
-    if (d.baList.length || grantBehind || d.fund.short > 0) add({ key: 'ba:' + d.baList.map(b => Math.round(b.short)).join(',') + ':' + Math.round(d.fund.short), due: d.fund.short > 0 ? '尽快' : '本月', lv: d.fund.short > 0 ? 'red' : 'amber',
-      title: '<b>催 BA 到账</b>' + (d.baList.length ? '：' + d.baList.length + ' 个来源缺钱' : ''), amt: d.baList.length ? fmtCny(sum(d.baList, b => b.short)) : (d.fund.short > 0 ? fmtCny(d.fund.short) : ''),
-      note: d.baList.map(b => esc(b.name) + ' 缺 <b>' + fmtCny(b.short) + '</b>（' + b.kind + (b.latest ? '，最晚 ' + b.latest + ' 月到账' : '') + '）').join('；') +
-        (grantBehind && !d.baList.length ? '授予进度 ' + fmtPct(c.grantProg) + ' 落后时间进度 ' + fmtPct(c.timeProg) + '，差 ' + fmtCny(c.planCnyTotal * c.timeProg - c.availTotal) : '') +
-        (d.fund.short > 0 ? (d.baList.length ? '；' : '') + '<span style="color:var(--red)">钱不够：到 ' + esc(d.fund.cash.short.when) + '（' + esc(d.fund.cash.short.label) + '）时差 ' + fmtCny(d.fund.short) + '（已经算上在途冻结的返还）</span>' : ''), goto: 'srcHealth' });
+    /* ③ 催 BA：只看"规划了还没到账"的钱（已到账 = 往年结转 + 本年度授予）。到账进度落后 10 个百分点以上、或两个月内手里的钱不够才出待办；PO 冻结的钱不在这里（见 ④） */
+    if (d.baList.length) add({ key: 'ba:' + d.baList.map(b => Math.round(b.short)).join(',') + (d.fund.cash.shortNear ? ':soon' : ''), due: d.fund.cash.shortNear ? '尽快' : '本月', lv: d.fund.cash.shortNear ? 'red' : 'amber',
+      title: '<b>催 BA 到账</b>：' + d.baList.length + ' ' + (d.baList.some(b => b.shared) ? '项' : '条规划') + '还没到账', amt: fmtCny(sum(d.baList, b => b.short)),
+      note: d.baList.map(b => esc(b.name) + ' 到账 ' + fmtCny(b.got) + ' / 规划 ' + fmtCny(b.plan) + (b.onPlat ? '（' + fmtPct(b.pct) + '）' : '——平台上还没出现') + (b.shared ? '，多条规划共用' : '') + '，还差 <b>' + fmtCny(b.short) + '</b>' + (b.latest ? '，最晚 ' + b.latest + ' 月到账' : '')).join('；') +
+        (d.fund.cash.shortNear ? '；<span style="color:var(--red)">两个月内手里的钱不够：到 ' + esc(d.fund.cash.shortNear.when) + '（' + esc(d.fund.cash.shortNear.label) + '）时差 ' + fmtCny(d.fund.cash.shortNear.short) + '</span>' : (d.baList.some(b => b.behind) ? '；到账进度落后时间进度（' + fmtPct(c.timeProg) + '）' : '')), goto: 'planCard' });
     /* ④ 催验收：往月没关闭的 PO 冻结着钱 */
     if (c.poReturn > 0) add({ key: 'accept:' + c.openCnt, due: d.yearEnd && !d.isDec ? '12-15 前' : '尽快', title: '<b>催验收</b>', amt: c.openCnt + ' 张',
       note: '在途冻结 ' + fmtCny(c.poFrozen) + '，验收后返还 <b>' + fmtCny(c.poReturn) + '</b>' + (d.yearEnd ? '；12 月 15 日前完成，返还的钱才能用于 1 月 PO' : '；验收周期约 1 个月'), btn: 'goto:po', btnTxt: '看明细' });
     /* 年底 */
     if (d.yearEnd && d.short.total > 0) add({ key: 'short:' + Math.round(d.short.total), due: '清算前', lv: d.short.able > 1000 ? 'amber' : 'red', title: '年底还有 <b>' + fmtCny(d.short.total) + '</b> 到不了目标', amt: d.short.list.length + ' 个来源' + (d.short.able > 1000 ? '，其中 ' + fmtCny(d.short.able) + ' 的钱还在' : ''),
-      note: (d.short.able > 1000 ? '钱还在这些来源里，但 12 月的 PO 已经下了，只能靠 OD 花：再挂约 ' + Math.ceil(d.short.able / Math.max(d.short.rate, 1)) + ' 个 OD，写进变动计划后这里自动更新' : '这些来源手里已经没有钱（可支配和返还都算上了）') + '：' + d.short.list.map(x => esc(x.name) + ' 差 ' + fmtCny(x.short) + (x.odAble > 1000 ? '（钱还在 ' + fmtCny(x.odAble) + '）' : '')).join('、'), goto: 'srcHealth' });
+      note: d.short.list.map(x => { const a = Math.min(x.short, x.un || 0), rest = x.short - a, b = Math.min(rest, x.odAble), bits = [];
+        if (a > 1000) bits.push(fmtCny(a) + ' 还没到账——催 BA'); if (b > 1000) bits.push(fmtCny(b) + ' 的钱还在这个 IT 预算项里，只能靠 OD 花'); if (rest - b > 1000) bits.push(fmtCny(rest - b) + ' 钱都到了也不够——调低目标或再挂 OD');
+        return esc(x.name) + ' 差 ' + fmtCny(x.short) + (bits.length ? '（' + bits.join('；') + '）' : ''); }).join('、') +
+        (d.short.able > 1000 ? '——钱还在的那部分：12 月的 PO 已经下了，只能靠 OD 花，再挂约 ' + Math.ceil(d.short.able / Math.max(d.short.rate, 1)) + ' 个 OD，写进变动计划后自动计入年终清算' : ''), goto: 'srcHealth' });
     if (d.yearEnd && !d.isDec && J.short > 0) add({ key: 'janShort:' + Math.round(J.short), due: '12-20 前', lv: 'amber', title: '1 月 PO 缺 <b>' + fmtCny(J.short) + '</b>',
       note: '达标后的结余只够 ' + fmtCny(J.reserve) + '，团队 1 月需要 ' + fmtCny(J.need) + '——调低某个来源的目标就能补足（目标由你权衡）', btn: 'goto:data', btnTxt: '去调目标', goto: 'opsYear' });
   }
   /* 数据与配置 */
-  if (c.unmatched.length) add({ key: 'link:' + c.unmatched.join(','), due: '本月', title: '<b>关联 ' + c.unmatched.length + ' 个预算来源编码</b>', note: c.unmatched.map(u => esc(c.snap.rows[u].name)).join('、') + '——不关联，执行率的分母不准', btn: 'link:manage', btnTxt: '去关联' });
+  /* 挂载：规划 → IT 预算项（多对一）。平台数据导入后才看得出哪条没挂；平台上有、规划里没有的 IT 预算项另算一条 */
+  const noMount = c.snap ? c.plansY.filter(p => !p.dead && wusdOf(p) > 0 && !p.code) : [];
+  if (noMount.length) add({ key: 'mount:' + noMount.map(p => p.id).join(','), due: '本月', title: '<b>' + noMount.length + ' 条规划还没挂 IT 预算项</b>', note: noMount.map(p => esc(p.name)).join('、') + '——挂上以后执行率才算得准；在年初规划表每行的「IT 预算项」里选，选完自动保存', goto: 'planCard' });
+  if (c.unmatched.length) add({ key: 'unmatched:' + c.unmatched.join(','), due: '本月', title: '<b>平台上 ' + c.unmatched.length + ' 个 IT 预算项规划里没有</b>', note: c.unmatched.map(u => esc(c.per[u].name)).join('、') + '——是你的就新增一条规划挂上，不是你的就剔除', goto: 'srcHealth' });
   const pvNeed = parseVerNeed().filter(parseKindHasData);
   const pvNames = pvNeed.map(k => PARSE_NAME[k]).join('、');
   const pvNoFile = pvNeed.length > 0 && pvNeed.every(k => (state.parseVerNoFile || []).indexOf(k) >= 0);   // 数据集文件夹里没有这类文件（以前是手动导入的）
@@ -2648,7 +2699,7 @@ function buildAgenda(c, d, m) {
 
   /* ---- 提醒：不用去操作系统，但要知道的 ---- */
   if (d) {
-    if (d.fund.short > 0) { const cs = d.fund.cash.short; notes.push(['red', '钱不够', '按到账时间排下来，到 <b>' + esc(cs.when) + '</b>（' + esc(cs.label) + '）时差 <b>' + fmtCny(d.fund.short) + '</b>（已经算上在途冻结、验收后会回来的 ' + fmtCny(d.fund.cash.refundPast + d.fund.cash.refundCur) + '）——先催 BA 到账、催验收']); }
+    if (d.fund.short > 0) { const cs = d.fund.cash.short; notes.push(['red', '钱不够', '按到账时间排下来，到 <b>' + esc(cs.when) + '</b>（' + esc(cs.label) + '）时差 <b>' + fmtCny(d.fund.short) + '</b>' + (cs.near ? '，就在这两个月内' : '') + '。' + (why || '钱都到了、也没有冻结的——是规划本身不够花')]); }
     if (P && P.tookReserve > 0.5 && (O.splitMo.length || O.plans.some(p => p.left > 0.5) || O.curOtherProj.length)) notes.push(['amber', '为了执行率，PO 动了留给 OD 的钱', '这次 PO 从 ' + esc(O.anchorNext) + ' 里拿了 <b>' + fmtCny(P.tookReserve) + '</b>（本来是给 OD 留的）：有缺口的来源靠常规 OD 补不上，执行率优先。后面的 OD 怎么挂见 ②', 'opsOd']);
     if (O.lateRefund.length) notes.push(['amber', '年终清算要等 11 月 PO 的钱', '年终清算里有 <b>' + fmtCny(sum(O.lateRefund, p => p.refundCur)) + '</b> 要等 11 月 PO 多下的部分验收返还（12 月下旬才到账）。赶得上 12 月 31 日，但时间很紧：验收一拖过年底，这笔就没有钱扣', 'opsOd']);
     if (I.fc > 0 && I.fc < I.need * 0.95) notes.push(['amber', '当月 PO 不够', '当月在执行的 PO 预计执行 ' + fmtCny(I.fc) + '，团队当月需求约 ' + fmtCny(I.need) + '，差 <b>' + fmtCny(I.need - I.fc) + '</b>——需要补一张 PO']);
@@ -2715,7 +2766,7 @@ function renderHero(c, d, m, ag) {
     (c.snap ? '<div class="stats">' +
       '<div class="stat"><div class="lab">可支配</div><div class="val ' + (d && d.fund.short > 0 ? 'c-red' : '') + '">' + fmtCny(c.remainTotal) + '</div><div class="sub">IT外包 ' + fmtCny(itwRemain) + ' · OD ' + fmtCny(odRemain) + (d && d.od.excessOd > 10000 ? '<span style="color:var(--amber)"> · 多余 OD ' + fmtCny(d.od.excessOd) + '</span>' : '') + '</div></div>' +
       '<div class="stat"><div class="lab">在途冻结</div><div class="val ' + (c.poReturn > 0 ? 'c-amber' : '') + '">' + fmtCny(c.poFrozen) + '</div><div class="sub">' + c.openCnt + ' 张未关闭 · 返还 ' + fmtCny(c.poReturn) + (c.poExclFrozen > 0.5 ? ' · 另有剔除的 PO 冻结 ' + fmtCny(c.poExclFrozen) : '') + '</div></div>' +
-      '<div class="stat"><div class="lab">授予进度</div><div class="val ' + grantCls + '">' + fmtPct(c.grantProg) + '</div><div class="sub">' + fmtCny(c.availTotal) + ' / ' + fmtCny(c.planCnyTotal) + '</div></div>' +
+      '<div class="stat"><div class="lab">到账进度</div><div class="val ' + grantCls + '">' + fmtPct(c.grantProg) + '</div><div class="sub">' + fmtCny(c.availTotal) + ' / ' + fmtCny(c.planCnyTotal) + '</div></div>' +
       '</div>' : '') +
     '<div class="notes-title">需要留意 <span class="muted">' + (ag.notes.length ? ag.notes.length + ' 条' : '') + '</span></div>' +
     (ag.notes.length ? ag.notes.map(([lv, tag, txt, to]) => '<div class="note ' + lv + '"><i>' + (lv === 'red' ? '!' : lv === 'amber' ? '·' : 'i') + '</i><div><b>' + tag + '</b>　' + txt + (to ? ' <a class="lnk" data-action="goto:anchor" data-target="' + to + '">看</a>' : '') + '</div></div>').join('')
@@ -2821,10 +2872,10 @@ function renderOps(c, d, m) {
       '<div class="ins-head">① 20 号前下 <b>' + P.nextM + ' 月 PO</b>：<b class="big">' + fmtCny(P.toIssue) + '</b>' + (P.issued > 0 ? '<span class="muted">（需求 ' + fmtCny(P.need) + '，已下 ' + fmtCny(P.issued) + '）</span>' : '') + '</div>' +
       '<div class="ins-sub">' + basis + '</div>' + issuedHtml +
       ((P.parts && P.parts.length) ? partsHtml(P.parts)
-        : (P.alloc.length ? allocHtml(P.alloc) : '<div class="ins-sub bad">可支配的钱不够，这张 PO 没有钱包可出——先催 BA / 催验收</div>')) +
+        : (P.alloc.length ? allocHtml(P.alloc) : '<div class="ins-sub bad">可支配的钱不够，这张 PO 没有钱包可出' + (moneyWhy(c, d) ? '——' + moneyWhy(c, d) : '') + '</div>')) +
       (P.odBackTotal > 0.5 ? '<div class="ins-sub warn">⚠ 下这张 PO 前，先把 <b>' + fmtCny(P.odBackTotal) + '</b> 的 OD 额度调回 IT外包（不在 OD 挂的那个项目里、或后面的 OD 扣减用不到的额度，标〔〕的那些预算项）</div>' : '') +
       (P.tookReserve > 0.5 ? '<div class="ins-sub ' + (odAllOk ? '' : 'warn') + '">这张 PO 从 ' + esc(O.anchorNext) + ' 留给 OD 的钱里拿了 <b>' + fmtCny(P.tookReserve) + '</b>：有缺口的来源靠常规 OD 补不上，执行率优先' + (odAllOk ? '；后面的 OD 仍然挂得进去' : '；后面的 OD 怎么挂见 ②') + '</div>' : '') +
-      (P.toIssue - P.funded > 1000 ? '<div class="ins-sub bad">其中 <b>' + fmtCny(Math.round((P.toIssue - P.funded) / 1000) * 1000) + '</b> 没有钱可出——先催 BA / 催验收</div>' : '') + planHtml() +
+      (P.toIssue - P.funded > 1000 ? '<div class="ins-sub bad">其中 <b>' + fmtCny(Math.round((P.toIssue - P.funded) / 1000) * 1000) + '</b> 没有钱可出' + (moneyWhy(c, d) ? '——' + moneyWhy(c, d) : '') + '</div>' : '') + planHtml() +
       (!(P.parts && P.parts.length) ? '<div class="ins-sub muted">在团队 Excel 里加「PO归属」页签后，这里会按人员归属给出每张 PO 的金额和占比。</div>' : '') + '</div>';
   }
   /* 图（折着，展开才画）：各张 PO 的金额按预算来源拆色；各钱包本次出多少 / 出完还剩多少 */
@@ -2919,14 +2970,14 @@ function renderOps(c, d, m) {
     if (nov && YP.decOd) steps.push({ when: '12-31', title: 'OD 年终清算（11 月 + 12 月 + 年终奖）', amt: YP.decOd.need, from: odFrom(YP.decOd) });
     if (d.short.total > 0.5) steps.push({ when: '年底', title: '按配置里的安排，这些来源到不了目标', amt: 0, gap: true,
       from: d.short.list.map(x => esc(x.name) + ' 差 <b>' + fmtCny(x.short) + '</b>' + (x.odAble > 1000 ? '（钱还在 ' + fmtCny(x.odAble) + '，只能靠 OD 花）' : '（钱不够）')).join('、'),
-      note: (d.short.able > 1000 ? '钱还在的那部分：再挂约 ' + Math.ceil(d.short.able / Math.max(d.short.rate, 1)) + ' 个 OD，写进变动计划后自动计入上面的清算；' : '') + '钱不够的：催 BA 到账，或调低目标' });
+      note: (d.short.able > 1000 ? '钱还在的那部分：再挂约 ' + Math.ceil(d.short.able / Math.max(d.short.rate, 1)) + ' 个 OD，写进变动计划后自动计入上面的清算；' : '') + '钱不够的：还没到账的催 BA，其余调低目标或再挂 OD' });
     steps.push({ when: nov ? '12-20' : '现在', title: '下 1 月 PO（用达标之后剩下的钱）', amt: J.reserve, from: (J.parts && J.parts.length) ? J.parts.map(partHtml).join('') : allocHtml(J.alloc),
       note: '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>（只能满足 ' + (J.need > 0 ? Math.round(J.reserve / J.need * 100) : 0) + '%）' : '，✓ 够') + (J.odBackTotal > 0.5 ? '；其中 ' + fmtCny(J.odBackTotal) + ' 要先把 OD 额度调回 IT外包' : '') + (J.reserve - d.short.janAfterFill > 1000 ? '；达标缺口要是靠再挂 OD 补上，这里会少 ' + fmtCny(J.reserve - d.short.janAfterFill) : '') });
     if (d.unspent > 10000) steps.push({ when: '年底', title: '达标并留足 1 月后还花不掉的钱', amt: d.unspent, from: walletsOf(w => (!w.jan && w.left > 10000 ? w.left : 0)), note: '年底临时加 OD / 找别人花 / 调低目标' });
     const must = YP.poNext + (YP.curOd ? YP.curOd.need : 0) + (YP.decOd ? YP.decOd.need : 0);
     const moneyIn = d.refundPast + (nov ? d.refundCur : 0);
     const verdict = (poNoMoney + odNoMoney > 0.5)
-      ? '<b style="color:var(--red)">钱不够：</b>' + [poNoMoney > 0.5 ? '12 月 PO 有 ' + fmtCny(poNoMoney) + ' 没有着落' : '', odNoMoney > 0.5 ? 'OD 有 ' + fmtCny(odNoMoney) + ' 没有钱扣' : ''].filter(Boolean).join('、') + '——先催 BA 到账、催验收'
+      ? '<b style="color:var(--red)">钱不够：</b>' + [poNoMoney > 0.5 ? '12 月 PO 有 ' + fmtCny(poNoMoney) + ' 没有着落' : '', odNoMoney > 0.5 ? 'OD 有 ' + fmtCny(odNoMoney) + ' 没有钱扣' : ''].filter(Boolean).join('、') + '——' + (moneyWhy(c, d) || '钱都到了，是规划本身不够')
       : (janUnfunded > 0.5 ? '<b style="color:var(--amber)">今年的硬性支出都够</b>；留给 1 月的差 ' + fmtCny(janUnfunded) : '<b style="color:var(--green)">都够</b>');
     // 按钱包看：每个钱包的钱怎么进出（现在可用 ＋ 返还到账 − 各项支出 ＝ 年底剩余）
     const cols = [['现在可用', w => w.now], ['返还到账', w => w.refundPast + w.refundCur]].concat(nov ? [['12 月 PO', w => w.po], ['OD 11 月', w => w.odCur], ['OD 年底清算', w => w.odDec]] : [['OD 年底清算', w => w.odCur]]).concat([['1 月 PO', w => w.jan], ['年底剩余', w => w.left]]);
@@ -2980,15 +3031,16 @@ function renderOps(c, d, m) {
 // 提醒窗口的终点：1–4 月 → 5 月底；5–6 月 → 6 月底；7–10 月 → 10 月底；11–12 月 → 年底
 const odLabelOf = O => O.winEnd === 5 ? '5 月底' : O.winEnd === 6 ? '6 月底（含上半年清算）' : O.winEnd === 10 ? '10 月底' : '12 月底（含年终清算）';
 
-// 来源健康度：一个预算来源一行，按严重程度排——到不了目标且钱不够（红）→ 差一点、钱还在 / 未关联规划（黄）→ 达标（绿）→ 不考核（灰）
-// 首页只展开有问题的，正常的折在下面；预算来源页整张展开（opts.full），多列规划金额、已授予和执行的拆分
-// 看执行率的地方用年初规划里的名字，并标出系统里对应哪一项
+// 来源健康度：一个 IT 预算项一行，按严重程度排——到不了目标（红）→ 差一点钱还在 / 规划里没有对应项（黄）→ 达标（绿）→ 不考核（灰）
+// 首页只展开有问题的，正常的折在下面；预算来源页整张展开（opts.full），多列规划金额、到账和执行的拆分
+// 执行按 IT 预算项看（钱从 IT 预算项出，年底考核也看它）；到账按规划看——一对一的在行内写，多对一的每条规划一行
+// 一对一时主名用年初规划里的名字（熟悉），并标出系统里对应哪一项；多对一时主名用系统名
 let healthOpen = false;
 function healthRows(c, d) {
   const items = d.rows.map(r => {
     let g, tag;   // g：0 红　1 黄　2 绿　3 灰
-    if (r.unmatched) { g = 1; tag = ['t-amber', '未关联规划']; }
-    else if (!r.assessed) { g = 3; tag = ['t-gray', r.notGranted ? '未到账 · 不考核' : '不考核']; }
+    if (r.unmatched) { g = 1; tag = ['t-amber', '规划里没有']; }
+    else if (!r.assessed) { g = 3; tag = ['t-gray', r.notGranted ? '还没到账 · 不考核' : '不考核']; }
     else if (r.hit) { g = 2; tag = ['t-green', '✓ 达标']; }
     else if (r.short - r.odAble <= r.tol) { g = 1; tag = ['t-amber', '差一点 · 钱还在']; }
     else { g = 0; tag = ['t-red', '到不了目标']; }
@@ -2996,9 +3048,9 @@ function healthRows(c, d) {
   });
   return items.sort((a, b) => a.g - b.g || (b.r.short || 0) - (a.r.short || 0));
 }
-// 一个来源两根细条，条的总长 = 规划金额。
+// 一个 IT 预算项两根细条，条的总长 = 规划金额。
 // 上面看执行：已执行 → 在途将执行 → 已安排到年底（PO + OD）；到目标线之间还差的部分画成斜纹，绿线是目标
-// 下面看授予：已授予（其中冻结待返还画成灰点）；没授予的部分是浅色斜线
+// 下面看到账：已到账（其中冻结待返还画成灰点）；没到账的部分是浅色斜线
 function srcBar(r, c) {
   if (!r.planCny) return '<span class="muted">—</span>';
   const s = c.per[r.code], granted = s ? s.avail : 0, pc = r.planCny;
@@ -3015,43 +3067,83 @@ function srcBar(r, c) {
       (r.assessed ? '<div class="mk" style="left:' + pos(r.target) + '" title="目标 ' + fmtPct(r.target) + '"></div>' : '') +
     '</div>' +
     '<div class="sb gr">' +
-      '<div class="l e" style="width:' + w(granted / pc) + '" title="已授予 ' + fmtCny(granted) + '（规划 ' + fmtCny(pc) + '）"></div>' +
+      '<div class="l e" style="width:' + w(granted / pc) + '" title="已到账 ' + fmtCny(granted) + '（规划 ' + fmtCny(pc) + '）"></div>' +
       (r.refund > 500 ? '<div class="l f" style="left:' + pos((granted - r.refund) / pc) + ';width:' + w(Math.min(r.refund, granted) / pc) + '" title="其中冻结待返还 ' + fmtCny(r.refund) + '"></div>' : '') +
-      (granted < pc - 500 ? '<div class="l u" style="left:' + pos(granted / pc) + ';width:' + w((pc - granted) / pc) + '" title="未授予 ' + fmtCny(pc - granted) + '"></div>' : '') +
+      (granted < pc - 500 ? '<div class="l u" style="left:' + pos(granted / pc) + ';width:' + w((pc - granted) / pc) + '" title="还没到账 ' + fmtCny(pc - granted) + '"></div>' : '') +
     '</div></div>';
 }
 function srcHealthHtml(c, d, opts) {
   opts = opts || {};
-  if (!d) return '<div class="empty">' + (c.curM > 12 ? '本年度已结束。' : '导入执行表后，这里按预算来源列出目标、预计年底和还差多少。') + '</div>';
+  if (!d) return '<div class="empty">' + (c.curM > 12 ? '本年度已结束。' : '导入执行表后，这里按 IT 预算项列出目标、预计年底和还差多少。') + '</div>';
   const items = healthRows(c, d);
   const inherit = code => !!(code && c.per[code] && c.per[code].targetInherit);
   const cnt = g => items.filter(x => x.g === g).length;
   const full = !!opts.full, open = full || healthOpen;
+  const planLink = (pid, nm) => '<a class="lnk" data-action="goto:anchor" data-target="plan-' + esc(pid) + '" title="点到年初规划表里改（名称、金额、目标、挂在哪个 IT 预算项）">' + esc(nm) + '</a>';
+  // 到不了目标时，差的钱属于哪一种（按先后拆）：还没到账（催 BA）→ 还在这个 IT 预算项里、只能靠 OD 花 → 钱都到了也不够
+  const whyShort = r => {
+    const bits = [];
+    let need = r.short;
+    const a = Math.min(need, r.un || 0); need -= a;
+    const b = Math.min(need, r.odAble); need -= b;
+    if (a > r.tol) bits.push('<b>' + fmtCny(a) + '</b> 还没到账——催 BA');
+    if (b > r.tol) bits.push('<b>' + fmtCny(b) + '</b> 还在这个 IT 预算项里' + (r.refund > 500 ? '（其中 ' + fmtCny(Math.min(r.refund, b)) + ' 冻在 PO 里，验收后回来）' : '') + '，只能靠再挂 OD 花');
+    if (need > r.tol) bits.push('<b>' + fmtCny(need) + '</b> 钱都到了也不够——调低目标');
+    return '差的钱：' + bits.join('；');
+  };
   const rowHtml = x => {
     const r = x.r, s = r.code && c.per[r.code], now = r.planCny ? r.exec / r.planCny : null;
+    const subPlans = r.plan ? (r.plan.merged ? r.plan.plans : [r.plan]) : [];
     const wallets = r.wallets.map(w => (c.hasProj ? '<b>' + esc(w.proj) + '</b> ' : '') + 'IT外包 ' + fmtCny(w.itw) + (w.od > 500 ? ' · OD ' + fmtCny(w.od) : '')).join('<br>');
     let main;
-    if (!r.assessed) main = '<span class="muted">' + (r.unmatched ? '关联规划后才有目标' : '不考核') + '</span>';
-    else if (r.notGranted) main = '<b>' + fmtPct(r.target) + '</b> → <span class="muted">平台上还没出现</span><div class="sub bad">钱不够：催 BA 到账</div>';
+    if (!r.assessed) main = '<span class="muted">' + (r.unmatched ? '新增一条规划挂上以后才有目标' : '不考核') + '</span>';
+    else if (r.notGranted) main = '<b>' + fmtPct(r.target) + '</b> → <span class="muted">平台上还没出现</span>' + (r.un > r.tol ? '<div class="sub bad">规划了 ' + fmtCny(r.un) + ' 还没到账——催 BA</div>' : '');
     else {
       const how = r.hit ? (r.rate > r.target + 0.02 ? '<div class="sub">✓ 达标，超出目标 ' + fmtPct(r.rate - r.target) + '</div>' : '<div class="sub" style="color:var(--green)">✓ 达标</div>')
-        : (r.short - r.odAble <= r.tol) ? '<div class="sub warn">差的钱还在这个来源里（' + fmtCny(r.odAble) + '），12 月的 PO 下了之后只能靠 OD 花——再挂 OD 就能补平</div>'
-        : '<div class="sub bad">钱不够：还差 ' + fmtCny(r.short - r.odAble) + ' 没有着落' + (r.odAble > 1000 ? '（另有 ' + fmtCny(r.odAble) + ' 在这个来源里，只能靠 OD 花）' : '') + '——催 BA 到账，或调低目标</div>';
+        : (r.short - r.odAble <= r.tol ? '<div class="sub warn">差的钱都在这个 IT 预算项里，12 月的 PO 下了之后只能靠 OD 花——再挂 OD 就能补平</div>'
+        : '<div class="sub bad">' + whyShort(r) + '</div>');
       main = '<b>' + fmtPct(r.target) + (inherit(r.code) ? '<span class="muted">·默认</span>' : '') + '</b> → <b class="' + (r.hit ? '' : 'bad') + '">' + fmtPct(r.rate) + '</b>' + (r.hit ? '' : '　差 <b class="bad">' + fmtCny(r.short) + '</b>') + how;
     }
-    return '<tr class="g' + x.g + (x.g >= 2 && !open ? ' ok' : '') + '">' +
+    // 名字：一对一用规划名（点得动，跳到年初规划表）；多对一用系统名，下面每条规划一行；规划里没有的给出「新增」「剔除」
+    let nameCell;
+    if (r.unmatched) nameCell = '<b>' + esc(r.platName || r.name) + '</b><div class="sub muted">IT 预算项 ' + esc(r.code) + '</div>' +
+      (c.snap ? '<div class="btn-row" style="margin-top:4px">' + smallBtn('plan:newCode', '＋ 新增规划', '', ' data-id="' + esc(r.code) + '" title="是我的预算：新增一条规划，挂到这个 IT 预算项上"') + smallBtn('excl:add', '剔除', 'ghost', ' data-id="' + esc(r.code) + '" title="不是我的预算：整个来源不参与计算"') + '</div>' : '');
+    else if (r.plan && r.plan.merged) nameCell = '<b>' + esc(r.platName) + '</b><div class="sub muted">IT 预算项 ' + esc(r.code) + ' · 挂着 ' + subPlans.length + ' 条规划</div>';
+    else nameCell = (r.plan ? planLink(r.plan.id, r.name) : '<b>' + esc(r.name) + '</b>') +
+      (r.platName && r.platName !== r.name ? '<div class="sub">系统：' + esc(r.platName) + (r.code ? ' [' + esc(r.code) + ']' : '') + '</div>' : (r.code ? '<div class="sub muted">IT 预算项 ' + esc(r.code) + '</div>' : ''));
+    // 首页（窄表）只在还有钱没到账时写一行到账情况
+    let grantLine = '';
+    if (!full && c.snap && subPlans.length && r.un > r.tol) {
+      const gs = subPlans.map(p => d.planGrant[p.id]).filter(Boolean), noSplit = gs.some(g => !g.split);
+      grantLine = subPlans.length > 1
+        ? '<div class="sub bad">规划：' + subPlans.map(p => { const g = d.planGrant[p.id]; return esc(p.name) + (g && g.split ? '（未到账 ' + fmtCny(g.un) + '）' : ''); }).join('、') + (noSplit ? '　合计未到账 <b>' + fmtCny(r.un) + '</b>' : '') + '</div>'
+        : (gs.length && gs[0].split ? '<div class="sub bad">规划 ' + fmtCny(gs[0].plan) + ' · 到账 ' + fmtCny(gs[0].got) + ' · 未到账 <b>' + fmtCny(gs[0].un) + '</b></div>' : '');
+    }
+    const carry = (s && c.snap && c.snap.rows[r.code]) ? ((c.snap.rows[r.code].itw.prior || 0) + (c.snap.rows[r.code].od.prior || 0)) : 0;
+    const row = '<tr class="g' + x.g + (x.g >= 2 && !open ? ' ok' : '') + '">' +
       '<td><span class="tag ' + x.tag[0] + '">' + x.tag[1] + '</span></td>' +
-      '<td class="src"><b>' + esc(r.name) + '</b>' + (r.platName && r.platName !== r.name ? '<div class="sub">系统：' + esc(r.platName) + '</div>' : '') + (r.code ? '<div class="sub muted">' + esc(r.code) + '</div>' : '') + '</td>' +
-      (full ? '<td class="num">' + (r.planCny ? fmtCny(r.planCny) : '—') + (r.plan && r.plan.amountW != null ? '<div class="sub">' + fmtWusd(wusdOf(r.plan)) + ' 万美金</div>' : '') + '</td>' +
-              '<td class="num">' + (s ? fmtCny(s.avail) + (r.refund > 500 ? '<div class="sub">其中冻结 ' + fmtCny(r.refund) + '</div>' : '') : '—') + '</td>' : '') +
+      '<td class="src">' + nameCell + grantLine + '</td>' +
+      (full ? '<td class="num">' + (r.planCny ? fmtCny(r.planCny) : '—') + (subPlans.length === 1 && subPlans[0].amountW != null ? '<div class="sub">' + fmtWusd(wusdOf(subPlans[0])) + ' 万美金</div>' : '') + '</td>' +
+              '<td class="num">' + (s ? '到账 <b>' + fmtCny(s.avail) + '</b>' + (carry > 500 ? '<div class="sub">含往年结转 ' + fmtCny(carry) + '</div>' : '') + (r.refund > 500 ? '<div class="sub">其中冻在 PO 里 ' + fmtCny(r.refund) + '</div>' : '')
+                : (r.plan ? '到账 <b>' + fmtCny(0) + '</b>' : '')) +
+                (!r.plan ? '' : r.un > r.tol ? '<div class="sub bad">未到账 <b>' + fmtCny(r.un) + '</b></div>' : (s ? '<div class="sub" style="color:var(--green)">✓ 都到了</div>' : '')) + '</td>' : '') +
       '<td class="main">' + main + '</td>' +
       '<td class="bar-cell">' + (r.notGranted ? '<span class="muted">平台上还没有这一项</span>' : srcBar(r, c)) + '</td>' +
       (full && s ? '<td class="num">' + fmtCny(r.exec) + '<div class="sub">' + fmtPct(now) + ' · IT外包 ' + fmtCny(s.itwExec) + ' · OD ' + fmtCny(s.odExec) + '</div></td>' : (full ? '<td class="num">—</td>' : '')) +
       '<td class="num">' + fmtCny(r.funds) + (r.wallets.length ? '<div class="sub">' + (wallets || '—') + '</div>' : '') + '</td></tr>';
+    // 多对一：每条规划一行，看到账（执行不拆——钱从这个 IT 预算项出）
+    const subs = (full && r.plan && r.plan.merged) ? r.plan.plans.map((p, pi) => {
+      const g = d.planGrant[p.id], noAttr = (g && g.noAttr > 500 && pi === 0) ? g.noAttr : 0;   // 没选归属的授予是整个 IT 预算项的，只在第一条规划下写一次
+      return '<tr class="sub-plan g' + x.g + (x.g >= 2 && !open ? ' ok' : '') + '"><td></td><td class="src">└ ' + planLink(p.id, p.name) + '</td>' +
+        '<td class="num">' + (g ? fmtCny(g.plan) + '<div class="sub">目标 ' + (p.target != null ? fmtPct(p.target) : '默认') + '</div>' : '—') + '</td>' +
+        '<td class="num">' + (g ? (g.split ? '到账 ' + fmtCny(g.got) + (noAttr ? '<div class="sub warn">有 ' + fmtCny(noAttr) + ' 的授予还没选归属</div>' : '') + (g.un > g.tol ? '<div class="sub bad">未到账 ' + fmtCny(g.un) + '</div>' : '<div class="sub" style="color:var(--green)">✓ 都到了</div>') : '<span class="muted">按规划拆不开</span>') : '—') + '</td>' +
+        '<td colspan="3" class="muted">执行不按规划拆：钱从这个 IT 预算项出，执行率按 IT 预算项合并算</td></tr>';
+    }).join('') : '';
+    return row + subs;
   };
   const head = full
-    ? '<thead><tr><th>状态</th><th>预算来源<div class="sub">规划里的名字 · 系统里对应哪一项</div></th><th class="num">规划<div class="sub">万美金</div></th><th class="num">已授予<div class="sub">含结转</div></th><th>目标 → 预计年底<div class="sub">算法的最终目标：预计年底 ≥ 目标</div></th><th class="bar-cell">执行和授予<div class="sub">上：执行　下：授予</div></th><th class="num">已执行<div class="sub">现在 · IT外包 · OD</div></th><th class="num">可支配<div class="sub">按钱包</div></th></tr></thead>'
-    : '<thead><tr><th>状态</th><th>预算来源<div class="sub">规划里的名字 · 系统里对应哪一项</div></th><th>目标 → 预计年底<div class="sub">算法的最终目标：预计年底 ≥ 目标</div></th><th class="bar-cell">执行和授予<div class="sub">上：执行　下：授予</div></th><th class="num">可支配<div class="sub">按钱包</div></th></tr></thead>';
+    ? '<thead><tr><th>状态</th><th>IT 预算项<div class="sub">一对一：规划里的名字 · 系统里对应哪一项　多对一：系统名，下面每条规划一行</div></th><th class="num">规划<div class="sub">万美金</div></th><th class="num">到账<div class="sub">往年结转 + 本年度授予</div></th><th>目标 → 预计年底<div class="sub">算法的最终目标：预计年底 ≥ 目标</div></th><th class="bar-cell">执行和到账<div class="sub">上：执行　下：到账</div></th><th class="num">已执行<div class="sub">现在 · IT外包 · OD</div></th><th class="num">可支配<div class="sub">按钱包</div></th></tr></thead>'
+    : '<thead><tr><th>状态</th><th>IT 预算项<div class="sub">一对一：规划里的名字 · 系统里对应哪一项　多对一：系统名</div></th><th>目标 → 预计年底<div class="sub">算法的最终目标：预计年底 ≥ 目标</div></th><th class="bar-cell">执行和到账<div class="sub">上：执行　下：到账</div></th><th class="num">可支配<div class="sub">按钱包</div></th></tr></thead>';
   const colN = full ? 8 : 5;
   const okN = cnt(2) + cnt(3), badN = items.length - okN, hitN = cnt(2), unN = items.filter(x => x.r.unmatched).length;
   const foldRow = (okN > 0 && !full) ? '<tr class="fold-row" data-action="health:toggle"><td colspan="' + colN + '">' + (open ? '▾' : '▸') + ' 其余 ' + okN + ' 个不用管：达标 ' + hitN + ' 个 · 不考核 ' + cnt(3) + ' 个</td></tr>' : '';
@@ -3060,12 +3152,12 @@ function srcHealthHtml(c, d, opts) {
     (badN ? '' : '<div class="muted" style="margin-top:6px">✓ 考核来源都能达标</div>') +
     '<div class="bar-legend">' +
     '<span><i class="lg-a"></i>已执行</span><span><i class="lg-b"></i>在途将执行</span><span><i class="lg-c"></i>已安排到年底（PO + OD）</span><span><i class="lg-d"></i>还差</span><span><i class="lg-mk"></i>目标线</span>' +
-    '<span class="sep">｜</span><span><i class="lg-e"></i>已授予</span><span><i class="lg-f"></i>冻结待返还</span><span><i class="lg-u"></i>未授予</span></div>' +
+    '<span class="sep">｜</span><span><i class="lg-e"></i>已到账</span><span><i class="lg-f"></i>冻结待返还</span><span><i class="lg-u"></i>还没到账</span></div>' +
     '<div class="muted" style="margin-top:4px">' +
-    '<span class="tag t-red">到不了目标</span> 按配置里的安排到年底差这么多，且钱不够　' +
-    '<span class="tag t-amber">差一点 · 钱还在</span> 差的钱都在这个来源里，再挂 OD 就能补平（12 月的 PO 下了之后，这笔钱只有 OD 这一条路）　' +
-    '<span class="tag t-amber">未关联规划</span> 平台有、规划里没对上　' +
-    '<span class="tag t-gray">未到账</span> 平台上还没出现、没钱可花</div>';
+    '<span class="tag t-red">到不了目标</span> 按配置里的安排到年底差这么多；差的钱属于哪种写在行里（还没到账 / 还在这个 IT 预算项里 / 钱都到了也不够）　' +
+    '<span class="tag t-amber">差一点 · 钱还在</span> 差的钱都在这个 IT 预算项里，再挂 OD 就能补平（12 月的 PO 下了之后，这笔钱只有 OD 这一条路）　' +
+    '<span class="tag t-amber">规划里没有</span> 平台有、规划里没对上——新增一条规划挂上，或剔除　' +
+    '<span class="tag t-gray">还没到账</span> 规划了、平台上还没出现</div>';
 }
 // 钱包 = 花钱项目 × 预算项（下 PO、OD 扣减都落在钱包上）。执行表的余额按花钱项目各有一份；在途冻结按钱包记
 function walletHtml(c, d) {
@@ -3095,14 +3187,14 @@ function walletHtml(c, d) {
     '<td class="num">' + (x.hasD ? (x.used > 500 ? fmtCny(x.used) : '<span class="muted">—</span>') : '—') + '</td>';
   const subRow = s => '<tr class="sub-total"><td>' + esc(s.pk) + ' 小计</td><td class="sub">' + s.n + ' 个预算项</td><td></td><td class="num">' + fmtCny(s.avail) + '</td><td class="num">' + fmtCny(s.exec) + '</td><td class="num">' + fmtCny(s.itw + s.od) + '</td><td class="num">' + fmtCny(s.frozen) + '</td><td class="num">' + (d ? fmtCny(s.used) : '—') + '</td></tr>';
   let html = '<h3 class="sec-title">钱包（花钱项目 × 预算项）<span class="muted">　下 PO、OD 扣减都落在钱包上；一个预算项在两个花钱项目下都有钱时，是两个钱包</span></h3>' +
-    '<div class="tbl-wrap"><table class="tbl tbl-wallet"><thead><tr><th>花钱项目</th><th>预算项<div class="sub">系统里的名字 · 规划里的名字</div></th><th class="num">已授予<div class="sub">含结转 · IT外包 / OD</div></th><th class="num">已执行<div class="sub">IT外包 / OD</div></th><th class="num">现在剩余<div class="sub">IT外包 · OD</div></th><th class="num">在途冻结<div class="sub">验收后返还</div></th><th class="num">已安排到年底<div class="sub">PO · OD · 临时 OD · 1 月 PO</div></th></tr></thead><tbody>';
+    '<div class="tbl-wrap"><table class="tbl tbl-wallet"><thead><tr><th>花钱项目</th><th>预算项<div class="sub">系统里的名字 · 规划里的名字</div></th><th class="num">到账<div class="sub">往年结转 + 本年度授予 · IT外包 / OD</div></th><th class="num">已执行<div class="sub">IT外包 / OD</div></th><th class="num">现在剩余<div class="sub">IT外包 · OD</div></th><th class="num">在途冻结<div class="sub">验收后返还</div></th><th class="num">已安排到年底<div class="sub">PO · OD · 临时 OD · 1 月 PO</div></th></tr></thead><tbody>';
   subs.forEach(s => {
     html += rows.filter(x => x.pk === s.pk).sort((a, b) => (b.itwR + b.odR) - (a.itwR + a.odR)).map(x =>
       '<tr><td><b>' + esc(x.pk) + '</b></td><td><b>' + esc(x.name) + '</b>' + (x.plan && x.plan !== x.name ? '<div class="sub">规划：' + esc(x.plan) + '</div>' : '') + '<div class="sub muted">' + esc(x.code) + '</div></td>' +
       '<td class="num">' + split(x.itwA, x.odA) + '</td><td class="num">' + split(x.itwE, x.odE) + '</td>' + cell(x) + '</tr>').join('');
     html += subRow(s);
   });
-  return html + '</tbody></table></div><div class="muted" style="margin-top:6px">现在剩余 = 已授予 − 已执行 − 平台预测的在途部分（执行表的口径）；「已安排到年底」= 按本页的建议，到年底从这个钱包要花掉的钱（含 1 月 PO），其余就是年底剩下的。</div>';
+  return html + '</tbody></table></div><div class="muted" style="margin-top:6px">现在剩余 = 到账 − 已执行 − 平台预测的在途部分（执行表的口径）；「已安排到年底」= 按本页的建议，到年底从这个钱包要花掉的钱（含 1 月 PO），其余就是年底剩下的。</div>';
 }
 function renderNow() {
   const c = calc(), Y = curYear(), m = yearParams(Y);
@@ -3114,7 +3206,7 @@ function renderNow() {
     const hasOtherYear = state.plans.length || state.execSnaps.length;
     ob.innerHTML = '<div class="onboard"><h2>' + Y + ' 年度还没有数据</h2>' +
       (hasOtherYear
-        ? '<div class="muted" style="margin-bottom:12px">开启新年：复制上年规划与参数（编码关联沿用，金额可再调），然后正常导入新年平台数据。</div>' +
+        ? '<div class="muted" style="margin-bottom:12px">开启新年：复制上年规划和参数（挂在哪个 IT 预算项沿用，金额再改成新年的），然后正常导入新年平台数据。</div>' +
           '<div class="btn-row" style="justify-content:center"><button class="btn primary" data-action="year:start">🚀 开启 ' + Y + ' 年度（复制上年）</button>' +
           '<button class="btn" data-action="data:demo">加载示例数据</button></div>'
         : '<div class="muted" style="margin-bottom:12px">四步开始：① 数据管理 → 录入年初规划（名称 + 万美金）② 平台导出文件放进数据集文件夹（每个花钱项目一个子文件夹）③ 选一次数据文件（budget.json）④ 回到本页看进展、风险与行动。团队 Excel 放数据集根目录，预测更准。</div>' +
@@ -3401,11 +3493,11 @@ function renderBudget() {
   const n = g => items.filter(x => x.g === g).length;
   const sum = items.length
     ? '共 ' + items.length + ' 个预算来源：' + [n(0) ? '<span class="tag t-red">要处理 ' + n(0) + '</span>' : '', n(1) ? '<span class="tag t-amber">要留意 ' + n(1) + '</span>' : '', '<span class="tag t-green">达标 ' + n(2) + '</span>', '<span class="tag t-gray">不考核 ' + n(3) + '</span>'].filter(Boolean).join(' ') +
-      '<br><span class="muted">总体执行率</span> <b>' + fmtPct(c.execRate) + '</b> → 预计年底 <b>' + fmtPct(c.forecastRate) + '</b>（加权目标 ' + fmtPct(tgtAll) + '）　｜　规划 ' + fmtCny(c.planCnyTotal) + ' · 已授予 ' + fmtCny(c.availTotal) + ' · 已执行 ' + fmtCny(c.execTotal) + '（IT外包 ' + fmtCny(c.itwExec) + ' · OD ' + fmtCny(c.odExec) + '）· 可支配 ' + fmtCny(c.remainTotal)
+      '<br><span class="muted">总体执行率</span> <b>' + fmtPct(c.execRate) + '</b> → 预计年底 <b>' + fmtPct(c.forecastRate) + '</b>（加权目标 ' + fmtPct(tgtAll) + '）　｜　规划 ' + fmtCny(c.planCnyTotal) + ' · 已到账 ' + fmtCny(c.availTotal) + ' · 已执行 ' + fmtCny(c.execTotal) + '（IT外包 ' + fmtCny(c.itwExec) + ' · OD ' + fmtCny(c.odExec) + '）· 可支配 ' + fmtCny(c.remainTotal)
     : '';
   const plansOnly = (!c.snap && c.plansY.length)
-    ? '<h3 class="sec-title">年初规划<span class="muted">　平台上还没有数据，导入后这里按预算来源列出健康度和钱包</span></h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>规划名称</th><th>编码</th><th class="num">金额（万美金）</th><th class="num">折合 ¥</th><th class="num">目标</th><th>所属花钱项目</th></tr></thead><tbody>' +
-      c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5"' : '') + '><td><b>' + esc(p.name) + '</b>' + (p.dead ? ' <span class="tag t-gray">预算下不来</span>' : '') + '</td><td>' + esc(p.code || '') + (p.code ? '' : ' <span class="muted">待关联</span>') + '</td><td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * c.fx) + '</td><td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td class="muted">' + esc(p.planProject || '—') + '</td></tr>').join('') + '</tbody></table></div>'
+    ? '<h3 class="sec-title">年初规划<span class="muted">　平台上还没有数据，导入后这里按预算来源列出健康度和钱包</span></h3><div class="tbl-wrap"><table class="tbl"><thead><tr><th>规划名称</th><th>IT 预算项</th><th class="num">金额（万美金）</th><th class="num">折合 ¥</th><th class="num">目标</th><th>所属花钱项目</th></tr></thead><tbody>' +
+      c.plansY.map(p => '<tr' + (p.dead ? ' style="opacity:.5"' : '') + '><td><b>' + esc(p.name) + '</b>' + (p.dead ? ' <span class="tag t-gray">预算下不来</span>' : '') + '</td><td>' + esc(p.code || '') + (p.code ? '' : ' <span class="muted">还没挂</span>') + '</td><td class="num">' + fmtWusd(wusdOf(p)) + '</td><td class="num">' + fmtCny(wusdOf(p) * 10000 * c.fx) + '</td><td class="num">' + (p.target == null ? '<span class="muted">默认</span>' : p.target === 0 ? '<span class="muted">不考核</span>' : fmtPct(p.target)) + '</td><td class="muted">' + esc(p.planProject || '—') + '</td></tr>').join('') + '</tbody></table></div>'
     : '';
   // 特殊项：平台上的两个固定项目，本来就不关联规划、不参与计算（只在表下说明，不报风险）
   const specialHint = (c.specialRows && c.specialRows.length)
@@ -3602,27 +3694,46 @@ function renderData() {
       '<div class="cons-diff warn" id="wusdFix">🩹 检测到规划金额异常小（最大 ' + fmtWusd(maxW) + ' 万美金）——可能是旧版按<b>万美金</b>录入、升级时被误按美元换算。<button class="btn small primary" data-action="repair:wusd">一键修复（所有金额 ×10000）</button>　修复前已自动备份。</div>');
   }
 
-  /* ---- 年初规划 ---- */
-  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });   // 多条规划对应同一个系统预算项
+  /* ---- 年初规划：一行一条规划，每一格都能直接改。
+         挂载（这条规划的钱从哪个 IT 预算项出）是规划的属性，只在这里改：下拉选 IT 预算项（系统名），不手敲编码；多条规划可以挂同一个（多对一） ---- */
+  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });
+  const itName = code => (c.per[code] ? c.per[code].name : '') + ' [' + code + ']';
+  // 下拉的选项：平台上出现的 IT 预算项，已经挂着别的规划的标出来；自己挂的编码平台上还没有时也留着（选中的那一项）
+  const itOptions = (cur, selfId) => {
+    let h = '<option value="">— 还没挂 —</option>';
+    c.codes.forEach(code => { const others = (share[code] || []).filter(q => q.id !== selfId); h += '<option value="' + esc(code) + '"' + (cur === code ? ' selected' : '') + '>' + esc(itName(code)) + (others.length ? '（已挂：' + esc(others.map(q => q.name).join('、')) + '）' : '') + '</option>'; });
+    if (cur && c.codes.indexOf(cur) < 0) h += '<option value="' + esc(cur) + '" selected>' + esc(cur) + ((c.excluded || []).indexOf(cur) >= 0 ? '（已剔除）' : '（平台上还没出现）') + '</option>';
+    return h;
+  };
   const pw = $('#planTableWrap');
-  pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项：年初拿到规划清单后「批量粘贴」（每行 名称、金额）或一条条新增；编码等平台上出现后再关联。</div>' :
-    '<table class="tbl tbl-plan"><thead><tr><th>规划名称</th><th>编码<div class="sub">系统里的预算项</div></th><th>所属花钱项目</th><th class="num">金额<div class="sub">万美金</div></th><th class="num">折合 ¥</th><th class="num">目标 %<div class="sub">留空 = 默认</div></th><th>平台上的情况</th><th>备注</th><th>操作</th></tr></thead><tbody>' +
-    c.plansY.map(p => {
-      const s = p.code ? c.per[p.code] : null, r = (p.code && d) ? d.rows.find(x => x.code === p.code) : null;
-      const plat = p.dead ? '<span class="tag t-gray">已失效</span>' : !p.code ? '<span class="tag t-gray">待关联编码</span>' : !s ? (c.snap ? '<span class="tag t-amber">平台上还没出现</span>' : '<span class="muted">—</span>')
-        : '<b>' + fmtCny(s.avail) + '</b> 可用<div class="sub">执行 ' + fmtPct(s.execRate) + (r && r.assessed ? ' → 年底 ' + fmtPct(r.rate) : '') + '</div>';
-      return '<tr' + (p.dead ? ' class="dead"' : '') + '><td>' + (p.dead ? '<span class="tag t-gray">预算下不来</span> ' : '') + '<b>' + esc(p.name) + '</b>' +
-        ((share[p.code] || []).length > 1 ? '<div class="sub">和「' + esc(share[p.code].filter(q => q.id !== p.id).map(q => q.name).join('、')) + '」共用系统里的同一个预算项</div>' : '') + '</td>' +
-        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="code" value="' + esc(p.code || '') + '" placeholder="待关联" style="width:64px"></td>' +
-        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="planProject" value="' + esc(p.planProject || '') + '" placeholder="如 项目A,项目B" style="width:110px"></td>' +
+  pw.innerHTML = !c.plansY.length ? '<div class="empty">' + Y + ' 年还没有规划项：年初拿到规划清单后「批量粘贴」（每行 名称、金额）或一条条新增；平台上出现预算项以后，在每行的「IT 预算项」里选。</div>' :
+    '<table class="tbl tbl-plan"><thead><tr><th>规划名称</th><th>IT 预算项<div class="sub">这条规划的钱从哪一项出 · 系统里的名字</div></th><th>所属花钱项目</th><th class="num">金额<div class="sub">万美金</div></th><th class="num">折合 ¥</th><th class="num">目标 %<div class="sub">留空 = 默认</div></th><th>到账和执行<div class="sub">到账按规划看 · 执行按 IT 预算项看</div></th><th>备注</th><th></th></tr></thead><tbody>' +
+    c.plansY.slice().sort((a, b) => (!!a.code) - (!!b.code)).map(p => {   // 还没挂的排在最上面
+      const s = p.code ? c.per[p.code] : null, r = (p.code && d && d.rows) ? d.rows.find(x => x.code === p.code) : null;   // 还没导入平台数据时 d 是空的
+      const g = (d && d.planGrant[p.id]) || { got: 0, plan: wusdOf(p) * 10000 * m.fxRate, un: 0, tol: 0, split: true, noAttr: 0 };
+      let plat;
+      if (p.dead) plat = '<span class="tag t-gray">已失效</span>';
+      else if (!c.snap) plat = '<span class="muted">导入平台数据后显示到账</span>';
+      else if (!p.code) plat = '<span class="tag t-gray">还没挂 IT 预算项</span><div class="sub muted">挂上才算执行率</div>';
+      else if ((c.excluded || []).indexOf(p.code) >= 0) plat = '<span class="tag t-gray">这个 IT 预算项已剔除</span>';
+      else if (!s) plat = '<span class="tag t-amber">平台上还没出现</span><div class="sub bad">规划 ' + fmtCny(g.plan) + ' 都还没到账——催 BA</div>';
+      else {
+        plat = ((share[p.code] || []).length > 1 && !g.split ? '<span class="muted">和别的规划共用，到账只能看合计</span>' : '到账 <b>' + fmtCny(g.got) + '</b> / ' + fmtCny(g.plan)) +
+          (g.noAttr > 500 ? '<div class="sub warn">有 ' + fmtCny(g.noAttr) + ' 的授予还没选归哪条规划（见下面「授予流水」）</div>' : '') +
+          (g.split ? (g.un > g.tol ? '<div class="sub bad">未到账 ' + fmtCny(g.un) + '</div>' : '<div class="sub" style="color:var(--green)">✓ 都到了</div>') : '') +
+          '<div class="sub">执行 ' + fmtPct(s.execRate) + (r && r.assessed ? ' → 年底 ' + fmtPct(r.rate) : '') + '</div>';
+      }
+      return '<tr id="plan-' + esc(p.id) + '"' + (p.dead ? ' class="dead"' : (!p.code && c.snap ? ' class="nomount"' : '')) + '><td><input class="cell-in" data-pedit="' + p.id + '" data-f="name" value="' + esc(p.name) + '" style="width:100%;min-width:120px"></td>' +
+        '<td><select class="cell-in" data-pedit="' + p.id + '" data-f="code" style="width:100%;min-width:170px">' + itOptions(p.code, p.id) + '</select></td>' +
+        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="planProject" value="' + esc(p.planProject || '') + '" placeholder="如 项目A,项目B" style="width:100px"></td>' +
         '<td class="num"><input class="cell-in" data-pedit="' + p.id + '" data-f="amountW" value="' + (p.amountW != null ? p.amountW : '') + '" inputmode="decimal" style="width:70px"></td>' +
         '<td class="num" id="pcny-' + p.id + '">' + fmtCny(wusdOf(p) * 10000 * m.fxRate) + '</td>' +
         '<td class="num"><input class="cell-in" data-pedit="' + p.id + '" data-f="target" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" inputmode="decimal" placeholder="默认" style="width:56px"></td>' +
-        '<td>' + plat + '</td><td class="muted">' + esc(p.note || '') + '</td>' +
+        '<td>' + plat + '</td>' +
+        '<td><input class="cell-in" data-pedit="' + p.id + '" data-f="note" value="' + esc(p.note || '') + '" style="width:110px"></td>' +
         '<td style="white-space:nowrap">' + smallBtn('plan:dead', p.dead ? '恢复' : '失效', '', ' data-id="' + p.id + '" title="预算下不来的项目：从执行率的分母里拿掉、不再催 BA"') + ' ' + smallBtn('plan:del', '删除', 'danger', ' data-id="' + p.id + '"') + '</td></tr>';
     }).join('') + '</tbody></table>' +
-    '<div class="muted" style="margin-top:6px">编码、所属花钱项目、金额、目标都能直接在表里改，改完点一下别处自动保存。目标留空 = 用参数里的默认目标，填 0 = 不考核。</div>';
-
+    '<div class="muted" style="margin-top:6px">每一格都能直接改，改完自动保存。「IT 预算项」是这条规划的钱从哪一项出，多条规划可以挂同一个（多对一）；还没挂的排在最上面。目标留空 = 用参数里的默认目标，填 0 = 不考核。</div>';
   /* ---- 团队配置（只读，来源 = 数据集里的团队 Excel）+ PO 月度需求的来历 ---- */
   const team = state.team || [];
   const tPlan = Array.isArray(state.teamPlan) ? state.teamPlan : [];
@@ -3763,10 +3874,14 @@ const field = (label, inner) => '<label class="field"><span class="field-label">
 function planModal(p) {
   const isNew = !p || !!p._new;
   p = p || { name: '', code: '', amountW: '', note: '' };
+  const c = calc();   // 挂在哪个 IT 预算项：下拉里选（系统名），不手敲编码
+  const share = {}; c.plansY.forEach(q => { if (q.code && !q.dead) (share[q.code] = share[q.code] || []).push(q); });
+  let opts = '<option value="">— 还没挂（平台上出现后再挂）—</option>' + c.codes.map(code => '<option value="' + esc(code) + '"' + (p.code === code ? ' selected' : '') + '>' + esc(c.per[code].name + ' [' + code + ']') + ((share[code] || []).length ? '（已挂：' + esc(share[code].map(q => q.name).join('、')) + '）' : '') + '</option>').join('');
+  if (p.code && c.codes.indexOf(p.code) < 0) opts += '<option value="' + esc(p.code) + '" selected>' + esc(p.code) + '（平台上还没出现）</option>';
   openModal('<h3>' + (isNew ? '新增规划项' : '编辑规划项') + '</h3><div class="form-grid">' +
     field('规划名称（年初口径）', '<input id="f-name" type="text" value="' + esc(p.name) + '">') +
     field('金额（WUSD·万美金，可带小数）', '<input id="f-amount" type="text" inputmode="decimal" value="' + (p.amountW != null && p.amountW !== '' ? p.amountW : '') + '" placeholder="如 5.5 = $55,000">') +
-    field('平台编码（可留空，授予后关联）', '<input id="f-code" type="text" value="' + esc(p.code || '') + '" placeholder="如 111">') +
+    field('挂在哪个 IT 预算项', '<select id="f-code">' + opts + '</select>') +
     field('所属花钱项目（如：项目A / 项目A,B）', '<input id="f-pplanproject" type="text" value="' + esc(p.planProject || '') + '" placeholder="区分打到哪些花钱项目">') +
     field('执行率目标（%）', '<input id="f-target" type="text" inputmode="decimal" value="' + (p.target != null ? Math.round(p.target * 100) : '') + '" placeholder="留空=年度默认；0=不考核，如 100 / 92">') +
     field('备注', '<input id="f-note" type="text" value="' + esc(p.note || '') + '">') +
@@ -3774,7 +3889,7 @@ function planModal(p) {
 }
 function planPasteModal() {
   openModal('<h3>批量粘贴规划</h3>' +
-    '<div class="muted" style="margin-bottom:8px">每行一个规划项，格式：<b>名称, 金额WUSD[, 编码][, 目标%]</b>（逗号/制表符分隔；金额单位<b>万美金</b>保留小数，如 5.5；≥1000 视为美元自动换算；目标留空=年度默认、0=不考核）。年初从清单粘贴新建；新年粘贴后改金额。<b>替换</b>按名称保留已有编码关联。</div>' +
+    '<div class="muted" style="margin-bottom:8px">每行一个规划项，格式：<b>名称, 金额WUSD[, 编码][, 目标%]</b>（逗号/制表符分隔；金额单位<b>万美金</b>保留小数，如 5.5；≥1000 视为美元自动换算；目标留空=年度默认、0=不考核）。年初从清单粘贴新建；新年粘贴后改金额。<b>替换</b>按名称保留已经挂在哪个 IT 预算项上。</div>' +
     '<textarea id="pastePlans" rows="9" placeholder="盘古平台建设, 50000\n智能运维中台, 3万\n数据治理专项, 20000, 333"></textarea>' +
     '<div id="planPastePreview"></div>' +
     '<div class="modal-actions"><button class="btn" data-action="modal:close">取消</button>' +
@@ -3803,7 +3918,7 @@ function planPasteGo(mode) {
   if (!rows.length) { warn('未识别到任何规划项，检查格式：名称, 金额USD[, 编码]'); return; }
   const Y = curYear();
   if (mode === 'replace') {
-    if (plansOf(Y).length && !confirm('替换将覆盖 ' + Y + ' 年现有 ' + plansOf(Y).length + ' 项规划（按名称保留编码关联），确认？')) return;
+    if (plansOf(Y).length && !confirm('替换将覆盖 ' + Y + ' 年现有 ' + plansOf(Y).length + ' 项规划（按名称保留挂在哪个 IT 预算项），确认？')) return;
     const old = plansOf(Y);
     const kept = [];
     rows.forEach(r => {
@@ -3902,26 +4017,6 @@ function exclModal() {
     (items ? '<table class="tbl" id="exclList"><thead><tr><th>编码</th><th>名称</th><th class="num">已执行(未计)</th><th>操作</th></tr></thead><tbody>' + items + '</tbody></table>' : '<div class="empty">当前没有剔除项。到「预算来源」页，未关联的行上有 🚫剔除 按钮。</div>') +
     '<div class="modal-actions"><button class="btn" data-action="modal:close">关闭</button></div>');
 }
-function linkModal() {
-  const c = calc();
-  if (!c.snap) { warn('请先导入执行表'); return; }
-  const unlinked = plansOf(curYear()).filter(p => !p.code);
-  const rowsHtml = c.codes.map(code => {
-    const s = c.per[code];
-    const cur = s.plan;
-    return '<tr><td><b>' + esc(s.name) + '</b> [' + esc(code) + ']</td>' +
-      '<td>' + (cur ? '✓ 已关联「' + esc(cur.name) + '」' + (unlinked.length ? ' <select data-linkadd="' + esc(code) + '"><option value="">＋ 再关联一条规划（多对一）</option>' + unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtWusd(wusdOf(p)) + 'W$</option>').join('') + '</select>' : '') :
-        '<select data-linkcode="' + esc(code) + '"><option value="">— 选择规划项 —</option>' +
-        unlinked.map(p => '<option value="' + p.id + '">' + esc(p.name) + ' ' + fmtWusd(wusdOf(p)) + 'W$</option>').join('') +
-        '<option value="__new__">＋ 新建规划项</option></select>') + '</td></tr>';
-  }).join('');
-  openModal('<h3>编码关联</h3>' +
-    '<div class="muted" style="margin-bottom:8px">把平台出现的预算来源编码关联到年初规划项；关联后自动合并计算。名称不一致没关系（两边名称都会显示）。</div>' +
-    '<table class="tbl"><thead><tr><th>平台预算来源</th><th>关联</th></tr></thead><tbody>' + rowsHtml + '</tbody></table>' +
-    '<div class="modal-actions"><button class="btn" data-action="modal:close">完成</button></div>');
-}
-
-/* ================= 示例数据 ================= */
 function demoState() {
   const y = new Date().getFullYear(), t = todayStr();
   const PA = 'IT项目A', PB = 'IT项目B';   // 花钱项目标识 = 数据集子文件夹名
@@ -4023,10 +4118,13 @@ async function handleAction(action, el, e) {
   if (action === 'goto:data') return switchTab('data');
   if (action === 'goto:po') return switchTab('po');
   if (action === 'goto:anchor') {   // 跳到页面里的某一块（在别的页签就先切过去）；它在折叠块里的话顺手展开
-    const t = document.getElementById(el.dataset.target); if (!t) return;
+    let t = document.getElementById(el.dataset.target);
+    if (!t && /^plan-/.test(el.dataset.target)) { renderData(); t = document.getElementById(el.dataset.target); }   // 规划表的行可能还没画出来
+    if (!t) return;
     const panel = t.closest('.tab-panel'); if (panel && !panel.classList.contains('active')) switchTab(panel.id.replace('tab-', ''));
     if (t.tagName === 'DETAILS') t.open = true;
     for (let p = t.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+    t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');   // 闪一下，让人看到是哪一行
     t.scrollIntoView({ behavior: 'smooth', block: 'start' }); return;
   }
   if (action === 'health:toggle') { healthOpen = !healthOpen; renderNow(); return; }
@@ -4155,7 +4253,10 @@ async function handleAction(action, el, e) {
     touch('plan'); save(); closeModal();
     return;
   }
-  if (action === 'link:manage') return linkModal();
+  if (action === 'plan:newCode') {   // 平台上出现了规划里没有的 IT 预算项：新增一条规划挂上去（IT 预算项已经选好）
+    const c0 = calc();
+    return planModal({ _new: true, code: id, name: c0.per[id] ? c0.per[id].name : '', amountW: '', note: '' });
+  }
 
   if (action === 'year:prev') { switchYear(curYear() - 1); return; }
   if (action === 'year:next') { switchYear(curYear() + 1); return; }
@@ -4166,7 +4267,7 @@ async function handleAction(action, el, e) {
     const from = (state.plans.some(p => p.year === Y - 1) || (state.poDataByYear || {})[Y - 1] || state.execSnaps.some(s => inYear(s.date, Y - 1))) ? Y - 1 : (state.plans.length ? Math.max(...state.plans.map(p => p.year)) : null);
     if (from == null) { warn('没有可复制的上一年数据，请直接录入规划'); return; }
     if (state.plans.some(p => p.year === Y)) { warn(Y + ' 年已有规划，无需开启'); return; }
-    if (!confirm('开启 ' + Y + ' 年度：复制 ' + from + ' 年的规划（编码关联沿用、金额可再调）与年度参数（团队配置共用），确认？')) return;
+    if (!confirm('开启 ' + Y + ' 年度：复制 ' + from + ' 年的规划（挂在哪个 IT 预算项沿用、金额可再调）与年度参数（团队配置共用），确认？')) return;
     plansOf(from).forEach(p => state.plans.push({ id: uid(), year: Y, code: p.code || '', name: p.name, amountW: wusdOf(p), target: p.target != null ? p.target : null, planProject: p.planProject || '', dead: false, note: '复制自' + from }));
     const ypFrom = yearParams(from);
     delete ypFrom.excluded;   // 预算来源的剔除按年独立：新年不沿用上年的剔除（来源可能不一样）
@@ -4226,10 +4327,10 @@ document.addEventListener('change', e => {
   }
   if (e.target.matches('[data-fproj]') && importCtx) { importCtx.files[+e.target.dataset.fproj].project = e.target.value.trim(); return; }
   if (e.target.matches('[data-param]')) { saveParams(); return; }   // 参数：改完自动保存
-  if (e.target.matches('[data-pedit]')) {   // 规划表内联编辑（失焦保存）
+  if (e.target.matches('[data-pedit]')) {   // 规划表里直接改（改完就存）
     const id2 = e.target.dataset.pedit, f = e.target.dataset.f, p = state.plans.find(x => x.id === id2);
     if (!p) return;
-    const v = e.target.value.trim();
+    const v = e.target.value.trim(), oldCode = p.code || '';
     if (f === 'amountW') {
       const w = parseWusd(v);
       if (w == null || w <= 0) { warn('金额无效（万美金，如 5.5）'); e.target.value = p.amountW != null ? p.amountW : ''; return; }
@@ -4241,13 +4342,29 @@ document.addEventListener('change', e => {
     } else if (f === 'target') {
       if (v === '') p.target = null;
       else { const tv = parseFloat(v); if (!Number.isFinite(tv) || tv < 0 || tv > 100) { warn('目标应为 0~100 或留空'); e.target.value = p.target != null ? Math.round(p.target * 100) : ''; return; } p.target = tv / 100; }
+    } else if (f === 'name') {
+      if (!v) { warn('规划名称不能为空'); e.target.value = p.name; return; }
+      p.name = v;
+    } else if (f === 'note') {
+      p.note = v;
     }
+    const mountChanged = f === 'code' && oldCode !== p.code;
     touch('plan'); saveSilent();
     const cnyCell = $('#pcny-' + id2);
     if (cnyCell) cnyCell.textContent = fmtCny(wusdOf(p) * 10000 * yearParams(curYear()).fxRate);
     renderBanner();
     // 联动刷新：首页决策卡/行动清单/预算来源表（不重建规划表避免丢焦点）
     renderNow(); renderBudget(); renderPO(); renderData();
+    if (mountChanged) {   // 挂载变了：说清楚结果——共用 = 多对一；取消 = 这条规划算不进执行率
+      const c2 = calc(), nm = p.code && c2.per[p.code] ? c2.per[p.code].name : '';
+      if (!p.code) notify('「' + p.name + '」已经不挂任何 IT 预算项——执行率算不到它，记得重新挂上', 'warn');
+      else {
+        const others = state.plans.filter(q => q.id !== p.id && q.year === curYear() && q.code === p.code && !q.dead);
+        notify(others.length
+          ? '「' + p.name + '」挂到了 IT 预算项「' + nm + '」，和「' + others.map(q => q.name).join('、') + '」共用（多对一）：执行率按这个 IT 预算项合并算；授予流水里要给每一笔选归哪条规划'
+          : '「' + p.name + '」挂到了 IT 预算项「' + (nm || p.code) + '」' + (c2.per[p.code] ? '' : '（平台上还没出现）'));
+      }
+    }
     return;
   }
   if (e.target.matches('[data-grantattr]')) {   // 授予流水里这一笔归哪条规划（多条规划对应一个系统预算项时用；按授予邮件里的规划归属人工判断）
@@ -4255,22 +4372,6 @@ document.addEventListener('change', e => {
     state.grantAttr = state.grantAttr || {};
     if (v) state.grantAttr[key] = v; else delete state.grantAttr[key];
     save();
-    return;
-  }
-  if (e.target.matches('[data-linkadd]')) {   // 已关联的编码再关联一条规划（多对一）
-    const p = state.plans.find(x => x.id === e.target.value);
-    if (p) { p.code = e.target.dataset.linkadd; touch('plan'); save(); linkModal(); }
-    return;
-  }
-  if (e.target.matches('[data-linkcode]')) {
-    const code = e.target.dataset.linkcode, v = e.target.value;
-    if (v === '__new__') {
-      planModal({ _new: true, code, name: '', amountW: '', note: '' }); return;   // 开规划弹窗新建一条，编码已经带上
-    } else if (v) {
-      const p = state.plans.find(x => x.id === v);
-      if (p) p.code = code;
-    } else return;
-    touch('plan'); save(); linkModal();
     return;
   }
   if (e.target.id === 'importFile') {
