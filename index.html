@@ -185,7 +185,7 @@ main{padding:18px 24px 40px;max-width:1440px;margin:0 auto}
 .mk.fore.f-green{border-color:var(--green)} .mk.fore.f-amber{border-color:var(--amber)} .mk.fore.f-red{border-color:var(--red)}
 .tbl-health tr.ok{display:none} .tbl-health.open tr.ok{display:table-row}
 .tbl-health tr.fold-row td{color:var(--blue);cursor:pointer;font-size:12px;padding:5px 8px}
-.bad{color:var(--red)}
+.bad{color:var(--red)} .warn{color:var(--amber)}
 #opsPo,#opsOd,#opsYear,#opsSim,#srcCard,#foldChecks,#foldMonth,#teamCard{scroll-margin-top:112px}
 /* ===== 预算来源页 / PO 台账 ===== */
 .sec-title{font-size:14px;font-weight:600;margin:18px 0 6px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 10px}
@@ -892,7 +892,7 @@ async function openDataFile() {
 }
 
 function defaultYearParams() {
-  return { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: '', excluded: [] };
+  return { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: '', excluded: [], otPeople: 12, otSkip: '2,6', festAttend: 0.9 };
 }
 function defaultState() {
   const y = new Date().getFullYear();
@@ -1585,6 +1585,9 @@ const inYear = (d, y) => String(d || '').startsWith(String(y));
 function calc() {
   const Y = curYear();
   const m = yearParams(Y), fx = m.fxRate;
+  const otPeople = Math.max(0, +m.otPeople || 0);                                   // 上线周周末加班的人数（按 1 倍单价计费）
+  const otSkip = String(m.otSkip != null ? m.otSkip : '2,6').split(/[,，、\s]+/).filter(Boolean).map(Number);   // 没有上线的月份
+  const festDef = (+m.festAttend > 0) ? +m.festAttend : 0.9;                        // 春节当月和 1 月的出勤系数（还没有实际数时用）
   const plansY = plansOf(Y);
   const byDate = (a, b) => a.date < b.date ? -1 : 1;
   const snaps = [...(state.execSnaps || [])].filter(s => inYear(s.date, Y)).sort(byDate);
@@ -1730,7 +1733,7 @@ function calc() {
   const curMo = Math.max(Math.min(curM, 12), 1);
   const poDaily = hasPoCfg ? poDailyAt(Y, curMo) : 0;      // 现在的 PO 日额（含已生效的计划）
   const theoryOd = hasOdCfg ? odCostAt(Y, curMo) : 0;      // 现在的 OD 月额
-  const theoryPo = mo => poDailyAt(Y, mo) * workdays(mo) * attend;
+  const theoryPo = mo => poDailyAt(Y, mo) * workdays(mo);   // 满勤时的月消耗（不含加班）
   // 按「PO归属」拆分某年月的 PO 日额（来自团队 Excel 的归属页签 / 归属列）；没标归属的并成一组
   const poSplit = (yy, mo) => {
     const acc = {};
@@ -1826,19 +1829,61 @@ function calc() {
   const odMonths = snaps.length ? Math.max(+(snaps[snaps.length - 1].date.slice(5, 7)) - 1, 1) : 1;
   const odAvg = normalDeltas.length ? sum(normalDeltas) / normalDeltas.length : (odExec > 0 ? odExec / odMonths : 0);
 
-  /* ---- 团队需求：PO 理论 × 校准系数（B主A兜底：没有团队配置时用历史月均 × 工作日修正） ---- */
+  /* ---- 团队需求：消耗 =（日额 × 工作日 + 上线周加班）× 出勤系数；建议金额 = 消耗 + 安全垫 ----
+     没有团队配置时退回历史：近 3 月实际月均 × 按工作日折算（B 主 A 兜底）。
+     · 加班：上线周的周末加一天，按 1 倍单价计费。每个月都上线，除了参数里填的月份（默认 2 月、6 月）。
+       加班只能换调休（按小时记），所以它不改变全年的钱，只是把消耗在月份之间挪：加班的当月多花，调休的当月少花。
+     · 出勤系数 = 实际 ÷（日额 × 工作日 + 加班），从已记全的月份反推。两种月份各记各的：
+         平月（平时有事才休）                        → 最近 3 个已记全的平月（不够就往前一年找）
+         春节当月和 1 月（调休到期，大家集中在过年前后休）→ 最近一个有数据的年份里的同类月份
+       比值离 1 太远的不采用（多半是 PO 明细没导全、执行列没记全）：平月要在 0.7~1.3，过年月份缺勤本来就多、下限放到 0.5。
+       不采用的退回参数里的出勤系数，首页提醒先核对数据。
+     · 安全垫：出勤系数是从实际数反推的 → 半天日额；用的是参数里的值 → 一天日额 */
   const poHist = Object.entries(poMonthlyAct).filter(([mo, v]) => v > 0 && +mo < asOf).sort((a, b) => +a[0] - +b[0]);
   const poLast3 = poHist.slice(-3);
   const poAvg = poLast3.length ? sum(poLast3, ([, v]) => v) / poLast3.length : 0;
   const poAvgWd = poLast3.length ? sum(poLast3, ([mo]) => workdays(+mo)) / poLast3.length : workdays(Math.max(Math.min(curM, 12), 1));
-  let calibR = 1;
-  if (hasPoCfg && poLast3.length >= 3) {
-    const a = sum(poLast3, ([, v]) => v), th = sum(poLast3, ([mo]) => theoryPo(+mo));
-    if (th > 0) calibR = Math.min(1.1, Math.max(0.9, a / th));
-  }
-  const needPo = mo => hasPoCfg ? theoryPo(mo) * calibR : (poAvg > 0 && poAvgWd > 0 ? poAvg * workdays(mo) / poAvgWd : 0);
+  const otCost = (yy, mo) => {   // 这个月上线周加班的钱 = 加班人数 × 这个月的平均日单价（加班人数不超过当时 PO 团队的人数）
+    if (!hasPoCfg || otPeople <= 0 || otSkip.indexOf(mo) >= 0) return 0;
+    const hc = sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount);
+    return hc > 0 ? Math.min(otPeople, hc) / hc * poDailyAt(yy, mo) : 0;
+  };
+  const wdOf = (yy, mo) => { const v = ((((state.years || {})[yy] || {}).workdays) || {})[mo]; return (v != null && v !== '' && !Number.isNaN(+v)) ? +v : wdDefaultY(yy, mo); };   // 那一年那个月的工作日（含手工覆盖）
+  const cnyMonth = yy => { const f = LUNAR_FEST[yy]; return f ? +String(f.cny).slice(0, 2) : 2; };   // 春节（正月初一）所在的月
+  const isFest = (yy, mo) => mo === 1 || mo === cnyMonth(yy);            // 调休到期的 1 月 + 春节当月
+  const basePo = (yy, mo) => poDailyAt(yy, mo) * wdOf(yy, mo) + otCost(yy, mo);   // 满勤时的月消耗
+  const actOf = (yy, mo) => {   // 团队在某年某月的实际执行（PO 明细的月度执行列；往年按那一年自己的剔除名单）
+    if (yy === Y) return poMonthlyAct[mo] || 0;
+    const pd = (state.poDataByYear || {})[yy];
+    if (!pd || !pd.rows || !(mo < (pd.asOf || 13))) return 0;
+    const yp0 = yearParams(yy), exP = new Set((yp0.excludedPos || []).map(k => String(k).split('|')[0])), exC = yp0.excluded || [];
+    return sum(pd.rows.filter(r => !exP.has(r.poNo) && exC.indexOf(r.budgetCode) < 0), r => +(r.months[mo] || 0));
+  };
+  const attOf = kind => {   // 一种月份的出勤系数 { months: 用了哪几个月, r: 实际 ÷ 理论, auto: 是不是从实际数反推的, v: 采用的值, bad: 有实际数但不可信 }
+    const nMax = kind === 'normal' ? 3 : 12, mos = [];
+    for (let yy = Y; yy >= Y - 3 && mos.length < nMax; yy--) {
+      let found = 0;
+      for (let mo = 12; mo >= 1 && mos.length < nMax; mo--) {
+        if ((kind === 'normal') === isFest(yy, mo)) continue;
+        if (yy === Y && mo >= asOf) continue;                 // 这个月还没记全
+        const act = actOf(yy, mo), wd = wdOf(yy, mo), th = poDailyAt(yy, mo) * wd, ot = otCost(yy, mo), base = th + ot;
+        if (!(act > 0) || !(base > 0)) continue;
+        mos.push({ yy, mo, wd, th, ot, base, act }); found++;
+      }
+      if (found && kind === 'fest') break;                    // 春节当月和 1 月：只看最近一个有数据的年份（同一年的放在一起）
+    }
+    const act = sum(mos, x => x.act), base = sum(mos, x => x.base), r = base > 0 ? act / base : null;
+    const ok = r != null && r >= (kind === 'normal' ? 0.7 : 0.5) && r <= 1.3;
+    return { months: mos, r, auto: ok, v: ok ? r : (kind === 'normal' ? attend : festDef), bad: r != null && !ok };
+  };
+  const attN = attOf('normal'), attF = attOf('fest');
+  const attendOf = (yy, mo) => isFest(yy, mo) ? attF : attN;
+  const needPo = mo => hasPoCfg ? basePo(Y, mo) * attendOf(Y, mo).v : (poAvg > 0 && poAvgWd > 0 ? poAvg * workdays(mo) / poAvgWd : 0);   // 团队这个月的消耗（期望值，不含安全垫）
+  const cushionPo = mo => hasPoCfg ? poDailyAt(Y, mo) * (attendOf(Y, mo).auto ? 0.5 : 1) : (poAvg > 0 && poAvgWd > 0 ? poAvg / poAvgWd * 0.5 : 0);   // 安全垫
+  const advisePo = mo => needPo(mo) + cushionPo(mo);          // 建议下的金额
   const poDailyJan = hasPoCfg ? poDailyAt(Y + 1, 1) : 0;   // 明年 1 月的日额（含明年生效的计划）
-  const needJan = hasPoCfg ? poDailyJan * janWd * attend * calibR : (poAvg > 0 && poAvgWd > 0 ? poAvg * janWd / poAvgWd : 0);
+  const cushionJan = hasPoCfg ? poDailyJan * (attendOf(Y + 1, 1).auto ? 0.5 : 1) : (poAvg > 0 && poAvgWd > 0 ? poAvg / poAvgWd * 0.5 : 0);
+  const needJan = hasPoCfg ? basePo(Y + 1, 1) * attendOf(Y + 1, 1).v + cushionJan : (poAvg > 0 && poAvgWd > 0 ? poAvg * janWd / poAvgWd + cushionJan : 0);   // 1 月 PO 的建议金额（含安全垫）
 
   /* ---- 在途 PO：当前月的预测按团队当月需求拆成「将执行 / 多下」；服务期之外的预测全部算返还 ---- */
   const started = curM >= 1 && curM <= 12;
@@ -1898,9 +1943,9 @@ function calc() {
   const odEst = {}, poEst = {};
   if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = hasOdCfg ? odDeduct(mo) : odBase * odMult(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
   const odFuture = sum(Object.entries(odEst), ([mo, v]) => +mo >= curM ? v : 0);
-  // 全年逐月的团队消耗（给"新年测算"用：不管现在是几月都按整年算；人数含变动计划，不含校准系数）
+  // 全年逐月的团队消耗（给"新年测算"用：不管现在是几月都按整年算；人数含变动计划和上线周加班，乘出勤系数）
   const yearCost = { po: [], od: [] };
-  for (let mo = 1; mo <= 12; mo++) { yearCost.po.push(hasPoCfg ? theoryPo(mo) : 0); yearCost.od.push(hasOdCfg ? odDeduct(mo) : 0); }
+  for (let mo = 1; mo <= 12; mo++) { yearCost.po.push(hasPoCfg ? basePo(Y, mo) * attendOf(Y, mo).v : 0); yearCost.od.push(hasOdCfg ? odDeduct(mo) : 0); }
   const poFuture = sum(Object.values(poEst));
 
   /* ================= 年底推演：每个来源从现在推到 12/31，本月的指令是推演的第一步 =================
@@ -2049,7 +2094,7 @@ function calc() {
   // 当月团队 PO：先补缺口（缺口大的来源优先、集中分），缺口填满后的余量走自由资金；
   // 两轮都先避开锚定项目给 OD 留的钱，实在不够才做第二轮（动预留）
   const allocPoMonth = (mo, det) => {
-    const pm = { mo, theory: needPo(mo), issued: issuedByMonth[mo] || 0, need: Math.max(0, needPo(mo) - (issuedByMonth[mo] || 0)), funded: 0, tookReserve: 0 };
+    const pm = { mo, theory: needPo(mo), issued: issuedByMonth[mo] || 0, need: Math.max(0, advisePo(mo) - (issuedByMonth[mo] || 0)), funded: 0, tookReserve: 0 };   // 要下的金额含安全垫
     poMonths.push(pm);
     const po = { anchor: anchorOf(mo), strict: true };
     let left = pm.need;
@@ -2214,7 +2259,7 @@ function calc() {
   let poDecision = null;
   if (started && snap) {
     const yearEnd = curM >= 11;
-    // 按「PO归属」把这次要下的 PO 拆成几张（各张金额 = 归属人员的 日额×工作日×出勤×校准），钱包分配按顺序依次分给各张
+    // 按「PO归属」把这次要下的 PO 拆成几张（各张金额 = 建议金额 × 这张的日额占比），钱包分配按顺序依次分给各张
     // 把钱包（花钱项目 × 预算来源）整块分给各张 PO：每张 PO 的金额由人员决定、保持不变；同一个钱包尽量不拆到两张 PO，
     // 每张 PO 最多只拆一个钱包（钱数少时穷举找最接近目标的组合，否则从大到小放）
     const assignWallets = (parts, items) => {
@@ -2297,19 +2342,20 @@ function calc() {
       yearEnd, isDec: curM === 12, nextM, asOf,
       // ① PO（1–11 月：下月的 PO；12 月：下旬下明年 1 月的 PO）
       po: nextM ? {
-        nextM, wd: workdays(nextM), theory: theoryPo(nextM), need: needPo(nextM), issued: issuedByMonth[nextM] || 0, issuedList: issuedPoList.filter(x => x.mo === nextM),
-        toIssue: ceilK(Math.max(0, needPo(nextM) - (issuedByMonth[nextM] || 0))),
-        low: Math.max(0, needPo(nextM) - dailyNext * 0.5), high: yearEnd ? needPo(nextM) : needPo(nextM) + dailyNext,
+        nextM, wd: workdays(nextM), theory: theoryPo(nextM), need: advisePo(nextM), expect: needPo(nextM), issued: issuedByMonth[nextM] || 0, issuedList: issuedPoList.filter(x => x.mo === nextM),   // need = 建议下的金额（含安全垫）；expect = 预计的消耗
+        toIssue: ceilK(Math.max(0, advisePo(nextM) - (issuedByMonth[nextM] || 0))),
+        low: needPo(nextM), high: advisePo(nextM),
+        base: basePo(Y, nextM), ot: otCost(Y, nextM), cushion: cushionPo(nextM), attend: attendOf(Y, nextM), fest: isFest(Y, nextM),
         alloc: nextDetail.items, projs: Array.from(nextDetail.projs), funded: poMonths.length ? poMonths[0].funded : 0,
         histNext: (poAvg > 0 && poAvgWd > 0) ? poAvg * workdays(nextM) / poAvgWd : 0,
         daily: dailyNext,
         tookReserve: poMonths.length ? poMonths[0].tookReserve : 0,        // 占用了留给 OD 的钱
         odBackTotal: sum(nextDetail.items, x => x.odBack || 0),              // 需要从 OD 额度调回 IT外包 的钱
         splitWallets: (() => { const seen = {}; return nextDetail.items.filter(x => x.split).filter(x => { const k = x.code + '|' + x.proj; if (seen[k]) return false; seen[k] = 1; return true; }); })(),
-        parts: splitParts(Y, nextM, needPo(nextM), nextDetail.items, issuedByMonth[nextM] || 0)
+        parts: splitParts(Y, nextM, advisePo(nextM), nextDetail.items, issuedByMonth[nextM] || 0)
       } : null,
       // ④ 1 月 PO（11 月预演；12 月就是本月的 PO 指令）
-      jan: { need: needJan, toIssue: ceilK(needJan), wd: janWd, reserve: janReserve, short: Math.max(0, needJan - janReserve), fromRefund: janFromRefund, fromCur: janFromCur, odBackTotal: janOdBack, alloc: janItems, hist: (poAvg > 0 && poAvgWd > 0) ? poAvg * janWd / poAvgWd : 0, daily: poDailyJan, parts: splitParts(Y + 1, 1, needJan, janItems, 0) },
+      jan: { need: needJan, toIssue: ceilK(needJan), expect: needJan - cushionJan, base: basePo(Y + 1, 1), ot: otCost(Y + 1, 1), cushion: cushionJan, attend: attendOf(Y + 1, 1), fest: true, wd: janWd, reserve: janReserve, short: Math.max(0, needJan - janReserve), fromRefund: janFromRefund, fromCur: janFromCur, odBackTotal: janOdBack, alloc: janItems, hist: (poAvg > 0 && poAvgWd > 0) ? poAvg * janWd / poAvgWd : 0, daily: poDailyJan, parts: splitParts(Y + 1, 1, needJan, janItems, 0) },
       planAhead,
       // ② OD：本月 = 保证这个月底的扣减够用（必做，在锚定项目里）；往后 = 每个月底的扣减能不能继续只落在锚定项目（提醒）
       od: (() => {
@@ -2338,7 +2384,7 @@ function calc() {
       exclExec: poExclWill,   // 剔除出决策的 PO 还会执行的（别的团队在花，计入年底执行）
       yearPlan,               // 年底资金安排：每个钱包的进出、留给 1 月的理论上限
       refundCur: sum(Object.values(refundCurW)),   // 11 月这张 PO 多下的部分（12 月下旬验收后返还，只用于 1 月 PO）
-      baList, calibR,
+      baList,
       // 在途识别结果（本月）
       inflight: { fc: curFc, willExec: curWillExec, over: curOver, k: kNeed, need: teamNeedAsOf, bySrc: Object.keys(willExecByCode).map(c => ({ code: c, name: per[c] ? per[c].name : c, fc: sum(poList.filter(r => r.budgetCode === c), r => info.get(r).cur) })).filter(x => x.fc > 0) },
       // 推演汇总
@@ -2348,8 +2394,6 @@ function calc() {
   }
   const odOverList = codes.filter(c => (per[c].odExec || 0) > (per[c].odAvail || 0) && (per[c].odExec || 0) > 0);
 
-  // 校准：团队理论 vs 历史实际
-  const calibPo = (hasPoCfg && poAvg > 0) ? (theoryPo(curMo) - poAvg) / poAvg : null;
   // OD 校准：只比"已有实际数的那几笔扣减"对应的费用月理论值（含变动计划的还原），计划内的加人/减人不算偏差
   const odHistTh = normalAll.slice(-3).map(([mo]) => odCostAt(Y, Math.max(+mo - 1, 1)));
   const calibOd = (hasOdCfg && odAvg > 0) ? ((odHistTh.length ? sum(odHistTh) / odHistTh.length : theoryOd) - odAvg) / odAvg : null;
@@ -2397,7 +2441,8 @@ function calc() {
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
     grantProg, grantWarn, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode, poExclWill, poExclFrozen, poExclAgg, poExclWillM,
-    workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
+    workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
+      basePo, otCost, needPo, cushionPo, advisePo, attendOf, isFest, attN, attF, otPeople, otSkip,   // PO 月度需求：消耗 = basePo × 出勤系数；建议金额 = advisePo
       hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) + sum(tempAt('od', yy, mo), v => v.headcount) }) },
     poAvg, poAvgWd,
     projects, hasProj, byPo, poParsedOld, wallets, odRemainTotal, odOverList, specialRows,
@@ -2541,7 +2586,7 @@ function buildAgenda(c, d, m) {
   if (c.checks.length) notes.push(['red', '两表不符', 'PO 明细汇总与执行表有 <b>' + c.checks.length + '</b> 项对不上（最大差额 ' + fmtCny(Math.max(...c.checks.map(k => Math.abs(k.diff)))) + '）', 'foldChecks']);
   if (c.grantChecks.length) notes.push(['amber', '授予流水对不上', '平台导出的授予流水与执行表「本年度授予」有 <b>' + c.grantChecks.length + '</b> 项不符', 'foldChecks']);
   c.importNotes.filter(n => n && n.text).forEach(n => notes.push(['amber', '导入提醒', esc(n.text)]));
-  if (c.team.hasPoCfg && Math.abs(c.team.calibPo || 0) > 0.1) notes.push(['amber', '团队校准', 'PO 理论与近 3 月实际偏差 <b>' + fmtPct(c.team.calibPo) + '</b>（理论 ' + fmtCny(c.team.theoryPo(Math.max(Math.min(c.curM, 12), 1))) + ' vs 近 3 月实际 ' + fmtCny(c.poAvg) + '）——核对人数、单价、出勤系数', 'teamCard']);
+  if (c.team.hasPoCfg && (c.team.attN.bad || c.team.attF.bad)) notes.push(['red', '团队配置和实际对不上', '近几月的实际执行 ÷ 理论 = <b>' + ((c.team.attN.bad ? c.team.attN : c.team.attF).r).toFixed(2) + '</b>，差得太离谱——先核对数据（PO 明细是不是都导进来了、执行列记全了没有）；这期间 PO 建议按参数里的出勤系数算，安全垫按一天日额', 'teamCard']);
   if (c.team.hasOdCfg && Math.abs(c.team.calibOd || 0) > 0.1) notes.push(['amber', '团队校准', 'OD 理论与近 3 月实际偏差 <b>' + fmtPct(c.team.calibOd) + '</b>（理论 ' + fmtCny(c.team.theoryOd) + ' vs ' + fmtCny(c.odAvg) + '）', 'teamCard']);
   if (c.curM <= 3 && c.po) {
     const crossPO = c.po.rows.filter(r => r.startDate && +String(r.startDate).slice(0, 4) === c.Y && +String(r.startDate).slice(5, 7) === 1);
@@ -2658,18 +2703,26 @@ function renderOps(c, d, m) {
     return poTableHtml({ projGroups: groups, total: tot });
   };
   const odAllOk = O.plans.every(p => p.other <= 0.5 && p.left <= 0.5);   // 往后每个月的扣减都能只落在锚定项目
+  // 建议金额的来由：消耗（日额 × 工作日 + 上线周加班，乘出勤系数）+ 安全垫
+  const howTxt = x => !c.team.hasPoCfg
+    ? '来由：没有 PO 团队配置，按近 3 月的实际月均 × 按工作日折算 = ' + fmtCny(x.expect) + '，加安全垫 ' + fmtCny(x.cushion) + '（半天）= <b>' + fmtCny(x.need) + '</b>——把团队 Excel 放进数据集根目录，就会改用人数 × 单价来算'
+    : '来由：（日额 ' + fmtCny(x.daily) + ' × ' + x.wd + ' 个工作日' + (x.ot > 0 ? ' ＋ 上线周加班 ' + fmtCny(x.ot) : '') + '）× 出勤 <b>' + x.attend.v.toFixed(3) + '</b> = ' + fmtCny(x.expect) +
+    '，加安全垫 <b>' + fmtCny(x.cushion) + '</b>（' + (x.attend.auto ? '半天日额' : '一天日额') + '）= <b>' + fmtCny(x.need) + '</b>' +
+    '<span class="muted">　｜　' + (x.attend.auto ? '出勤从近 ' + x.attend.months.length + ' 个' + (x.fest ? '过年月份' : '平月') + '的实际反推' + (x.fest ? '' : '')
+      : x.attend.bad ? '<span class="bad">实际数和理论差得太离谱，先核对数据；出勤暂用参数里的值</span>' : (x.fest ? '过年前后集中调休，出勤单独记；' : '') + '这类月份还没有实际数，出勤用参数里的值') +
+    ((x.histNext || x.hist) > 0 ? '　｜　近 3 月实际月均按工作日折算 ' + fmtCny(x.histNext || x.hist) : '') + '</span>';
   let html = '';
   /* ① PO */
   if (d.isDec) {
     html += '<div class="ins" id="opsPo"><div class="ins-head">① 下旬下 <b>1 月 PO</b>：<b class="big">' + fmtCny(J.toIssue) + '</b></div>' +
-      '<div class="ins-sub">来由：日额 ' + fmtCny(J.daily) + ' × 明年 1 月 ' + J.wd + ' 个工作日 × 出勤 ' + c.team.attend + (d.calibR !== 1 ? ' × 校准 ' + d.calibR.toFixed(3) : '') + ' = ' + fmtCny(J.need) + (J.hist > 0 ? '　｜　近 3 月实际折算 ' + fmtCny(J.hist) : '') + '　｜　参考区间 ' + fmtCny(Math.max(0, J.need - J.daily * 0.5)) + ' ~ ' + fmtCny(J.need) + '（年底不多下）</div>' +
+      '<div class="ins-sub">' + howTxt(J) + '</div>' +
       (partsHtml(J.parts) || allocHtml(J.alloc)) +
       (J.odBackTotal > 0.5 ? '<div class="ins-sub warn">⚠ 下这张 PO 前，先把 <b>' + fmtCny(J.odBackTotal) + '</b> 的 OD 额度调回 IT外包（标〔〕的那些预算项）</div>' : '') +
       (!J.alloc.length && J.toIssue > 0 ? '<div class="ins-sub bad">没有可用的钱——达标后的结余不够</div>' : '') + planHtml() +
       '<div class="ins-sub">' + (J.short > 0 ? '<span style="color:var(--red)">1 月 PO 缺 ' + fmtCny(J.short) + '：调低任一考核来源的目标 ' + fmtCny(J.short) + ' 即可补足（目标由你权衡）</span>' : '✓ 今年的结余够 1 月整月，团队不断档') +
       (J.fromRefund > 0 ? '　｜　其中 ' + fmtCny(J.fromRefund) + ' 要等往月 PO 在 12 月 15 日前验收返还' : '') + (J.fromCur > 0 ? '，' + fmtCny(J.fromCur) + ' 要等 11 月的 PO 在 12 月下旬验收返还' : '') + '</div></div>';
   } else if (P) {
-    const basis = '日额 ' + fmtCny(P.daily) + ' × ' + P.wd + ' 个工作日 × 出勤 ' + c.team.attend + (d.calibR !== 1 ? ' × 校准 ' + d.calibR.toFixed(3) : '') + ' = ' + fmtCny(P.need) + (P.histNext > 0 ? '　｜　近 3 月实际折算 ' + fmtCny(P.histNext) : '') + '　｜　参考区间 ' + fmtCny(P.low) + ' ~ ' + fmtCny(P.high) + (d.yearEnd ? '（年底按需求下满，不多下）' : '');
+    const basis = howTxt(P);
     // "已下"是哪几张 PO：服务期覆盖下月、已经提前下的 PO 会从下月的 PO 金额里扣掉；不属于团队月度消耗的可以在这里直接剔除出决策
     const issuedHtml = (() => {
       if (!(P.issued > 0 && P.issuedList.length)) return '';
@@ -2684,7 +2737,7 @@ function renderOps(c, d, m) {
     if (P.toIssue <= 0) html += '<div class="ins ok" id="opsPo"><div class="ins-head">✓ ' + P.nextM + ' 月 PO 已下齐（已下 ' + fmtCny(P.issued) + '）</div><div class="ins-sub">团队需求 ' + fmtCny(P.need) + '</div>' + issuedHtml + planHtml() + '</div>';
     else html += '<div class="ins" id="opsPo">' +
       '<div class="ins-head">① 20 号前下 <b>' + P.nextM + ' 月 PO</b>：<b class="big">' + fmtCny(P.toIssue) + '</b>' + (P.issued > 0 ? '<span class="muted">（需求 ' + fmtCny(P.need) + '，已下 ' + fmtCny(P.issued) + '）</span>' : '') + '</div>' +
-      '<div class="ins-sub">来由：' + basis + '</div>' + issuedHtml +
+      '<div class="ins-sub">' + basis + '</div>' + issuedHtml +
       ((P.parts && P.parts.length) ? partsHtml(P.parts)
         : (P.alloc.length ? allocHtml(P.alloc) : '<div class="ins-sub bad">可支配的钱不够，这张 PO 没有钱包可出——先催 BA / 催验收</div>')) +
       (P.odBackTotal > 0.5 ? '<div class="ins-sub warn">⚠ 下这张 PO 前，先把 <b>' + fmtCny(P.odBackTotal) + '</b> 的 OD 额度调回 IT外包（不在锚定项目里、或后面的 OD 扣减用不到的额度，标〔〕的那些预算项）</div>' : '') +
@@ -3062,7 +3115,7 @@ function backtestHtml(c) {
         return '<tr' + (i > 0 ? ' style="opacity:.85"' : '') + '><td>' + (i === 0 ? esc(L.date) : '') + '</td><td>' + nm + '</td><td class="num">' + fmtCny(e) + '</td>' +
           '<td class="num">' + (pending ? '<span class="muted">待下次导入</span>' : fmtCny(a)) + '</td><td class="num">' + (pending || !e ? '<span class="muted">—</span>' : '<span style="color:' + (Math.abs(dev(a, e)) > 0.1 ? 'var(--red)' : 'var(--green)') + '">' + (dev(a, e) * 100).toFixed(1) + '%</span>') + '</td></tr>';
       }).join('');
-    }).join('') + '</tbody></table><div class="muted" style="margin-top:6px">当月多下 = 那个月 PO 的总额 − 实际执行（含已验收返还的）。连续偏大说明习惯性多下，校准系数会自动收紧建议金额。</div>';
+    }).join('') + '</tbody></table><div class="muted" style="margin-top:6px">当月多下 = 那个月 PO 的总额 − 实际执行（含已验收返还的）。连续偏大说明习惯性多下。</div>';
 }
 function shortName(s) { const t = String(s || ''); return t.length > 14 ? t.slice(0, 13) + '…' : t; }
 
@@ -3345,15 +3398,19 @@ const smallBtn = (action, txt, cls, extra) => '<button class="btn small ' + (cls
 // 参数改完自动保存（和规划表一样）。在原有年度参数上改这几项：剔除名单、OD 锚定项目等其他设置要留着
 function saveParams() {
   const tg = parseFloat($('#meta-target').value), fx = parseFloat($('#meta-fx').value), bo = parseFloat($('#meta-bonus').value), fq = parseInt($('#meta-freq').value, 10), at = parseFloat($('#meta-attend').value);
+  const otP = parseFloat($('#meta-otpeople').value), fa = parseFloat($('#meta-fest').value), otS = String($('#meta-otskip').value || '').split(/[,，、\s]+/).filter(Boolean).map(Number);
   let msg = '';
   if (!(tg >= 50 && tg <= 100)) msg = '默认执行率目标应在 50~100';
   else if (!(fx > 0 && fx < 20)) msg = '汇率无效';
   else if (!(bo >= 0 && bo <= 12)) msg = '年终奖扣减应在 0~12 个月';
   else if (!(fq >= 1 && fq <= 60)) msg = '更新提醒应在 1~60 天';
   else if (!Number.isFinite(at) || at < 0.5 || at > 1.5) msg = '出勤系数应在 0.5~1.5';
+  else if (!(otP >= 0 && otP <= 500)) msg = '上线周加班的人数应在 0~500';
+  else if (otS.some(n => !(n >= 1 && n <= 12))) msg = '没有上线的月份应填 1~12 的数字，用逗号隔开';
+  else if (!(fa >= 0.5 && fa <= 1.5)) msg = '春节当月和 1 月的出勤系数应在 0.5~1.5';
   if (msg) { warn(msg + '，已恢复成原来的值'); renderAll(); return false; }
   const yp = yearParams(curYear());
-  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '' });
+  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '', otPeople: otP, otSkip: otS.join(','), festAttend: fa });
   state.meta.updateFreqDays = fq;
   paramSavedAt = Date.now();
   save();
@@ -3431,24 +3488,24 @@ function renderData() {
   const hcOf = a => sum(a, g => g.headcount || 0);
   const curMo2 = Math.max(Math.min(c.curM, 12), 1);
   let need = '';
-  if (c.snap) {
-    // 近 3 个已结束的月份（和 calc 里取的是同一批）：每个月的理论、实际、比值——校准系数就是从这里来的
-    const last3 = c.po.asOf ? Object.entries(c.poMonthlyAct).filter(([mo, v]) => v > 0 && +mo < c.po.asOf).sort((a, b) => +a[0] - +b[0]).slice(-3) : [];
+  if (c.team.hasPoCfg) {
+    // 建议金额怎么来的：满勤消耗 + 加班，乘出勤系数，再加安全垫。出勤系数两类月份各一个，下面列出各自是从哪几个月反推的
     const PX = d ? (d.isDec ? d.jan : d.po) : null;
-    const th = last3.map(([mo]) => c.team.theoryPo(+mo)), ac = last3.map(([, v]) => v);
-    const thS = sum(th), acS = sum(ac), ratio = thS > 0 ? acS / thS : null;
-    const calib = d ? d.calibR : 1;
-    need = '<h3 class="sec-title">PO 团队的月度需求怎么来的<span class="muted">　理论 = 日额 × 工作日 × 出勤系数；再乘一个校准系数</span></h3>' +
-      (c.team.hasPoCfg
-        ? '<div class="sum-line">PO 团队 <b>' + hcOf(poT) + '</b> 人 · 日额 <b>' + fmtCny(c.team.poDaily) + '</b>' + (PX ? '　｜　' + (d.isDec ? '明年 1 月' : PX.nextM + ' 月') + '（' + PX.wd + ' 个工作日）理论 ' + fmtCny(PX.theory) + ' × 校准 ' + calib.toFixed(3) + ' = <b>' + fmtCny(PX.need) + '</b>' + ((PX.histNext || PX.hist || 0) > 0 ? '　｜　近 3 月实际按工作日折算 ' + fmtCny(PX.histNext || PX.hist) : '') : '') + '</div>'
-        : '<div class="sum-line">没有团队配置：月度需求 = 近 3 月实际月均 × 按工作日折算（' + fmtCny(c.poAvg) + '/月）。把团队 Excel 放进数据集根目录，就会改用人数 × 单价来算。</div>') +
-      (last3.length
-        ? '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>月</th><th class="num">工作日</th><th class="num">理论</th><th class="num">实际执行<div class="sub">PO 明细</div></th><th class="num">实际 ÷ 理论</th></tr></thead><tbody>' +
-          last3.map(([mo], i) => { const q = th[i] > 0 ? ac[i] / th[i] : null; return '<tr><td>' + mo + ' 月</td><td class="num">' + c.workdays(+mo) + '</td><td class="num">' + fmtCny(th[i]) + '</td><td class="num">' + fmtCny(ac[i]) + '</td><td class="num">' + (q == null ? '—' : '<span class="' + (Math.abs(q - 1) > 0.1 ? 'bad' : '') + '">' + q.toFixed(3) + '</span>') + '</td></tr>'; }).join('') +
-          '<tr class="sub-total"><td>合计 / 平均</td><td class="num">' + sum(last3, ([mo]) => c.workdays(+mo)) + '</td><td class="num">' + fmtCny(thS) + '</td><td class="num">' + fmtCny(acS) + '</td><td class="num"><b>' + (ratio == null ? '—' : ratio.toFixed(3)) + '</b></td></tr></tbody></table></div>' +
-          '<div class="muted" style="margin-top:6px">校准系数 = 合计实际 ÷ 合计理论，夹在 0.9 ~ 1.1 之间' + (ratio != null ? '（现在 ' + ratio.toFixed(3) + ' → 用 ' + calib.toFixed(3) + (Math.abs(ratio - calib) > 0.0005 ? '，被夹过了' : '') + '）' : '') + '。近 3 月实际月均 ' + fmtCny(c.poAvg) + '。某个月份的实际明显偏低时，先看那个月的执行列是不是还没记全。</div>'
-        : '<div class="muted">近 3 个已结束的月份还没有实际数，暂时不校准（系数 = 1）。</div>');
-  }
+    const attLine = (name, a, note) => '<tr><td><b>' + name + '</b><div class="sub">' + note + '</div></td><td class="num"><b>' + a.v.toFixed(3) + '</b></td><td>' +
+      (a.auto ? '从 ' + a.months.map(x => (x.yy !== Y ? x.yy + ' 年' : '') + x.mo + ' 月').join('、') + ' 的实际反推' + (a.bad ? '' : '')
+        : a.bad ? '<span class="bad">实际 ÷ 理论 = ' + a.r.toFixed(2) + '，差得太离谱，不可信——先核对数据；现在用的是参数里的值</span>' : '这类月份还没有实际数——用的是参数里的值') + '</td></tr>';
+    const mos = c.team.attN.months.concat(c.team.attF.months).sort((a, b) => a.yy - b.yy || a.mo - b.mo);
+    need = '<h3 class="sec-title">PO 团队的月度需求怎么来的<span class="muted">　消耗 =（日额 × 工作日 + 上线周加班）× 出勤系数；建议金额 = 消耗 + 安全垫</span></h3>' +
+      '<div class="sum-line">PO 团队 <b>' + hcOf(poT) + '</b> 人 · 日额 <b>' + fmtCny(c.team.poDaily) + '</b>　｜　上线周的周末加班：每场 <b>' + c.team.otPeople + '</b> 人 × 1 天，按 1 倍单价；没有上线的月份：' + (c.team.otSkip.length ? c.team.otSkip.join('、') + ' 月' : '无') +
+      (PX ? '<br>' + (d.isDec ? '明年 1 月' : PX.nextM + ' 月') + '的建议金额：（日额 ' + fmtCny(PX.daily) + ' × ' + PX.wd + ' 个工作日' + (PX.ot > 0 ? ' ＋ 加班 ' + fmtCny(PX.ot) : '') + '）× 出勤 ' + PX.attend.v.toFixed(3) + ' = ' + fmtCny(PX.expect) + '，加安全垫 ' + fmtCny(PX.cushion) + '（' + (PX.attend.auto ? '半天日额' : '一天日额') + '）= <b>' + fmtCny(PX.need) + '</b>' : '') + '</div>' +
+      '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>出勤系数<div class="sub">实际执行 ÷（日额 × 工作日 + 加班）</div></th><th class="num">现在用的值</th><th>来处</th></tr></thead><tbody>' +
+      attLine('平月', c.team.attN, '平时有事才休') + attLine('春节当月和 1 月', c.team.attF, '调休到 1 月作废，大家集中在过年前后休') + '</tbody></table></div>' +
+      (mos.length
+        ? '<div class="tbl-wrap"><table class="tbl" style="margin-top:8px"><thead><tr><th>月</th><th class="num">工作日</th><th class="num">满勤消耗<div class="sub">日额 × 工作日</div></th><th class="num">加班</th><th class="num">实际执行<div class="sub">PO 明细</div></th><th class="num">出勤<div class="sub">实际 ÷（满勤 + 加班）</div></th></tr></thead><tbody>' +
+          mos.map(x => { const q = x.act / x.base; return '<tr><td>' + (x.yy !== Y ? x.yy + ' 年' : '') + x.mo + ' 月' + (c.team.isFest(x.yy, x.mo) ? ' <span class="tag t-amber">过年前后</span>' : '') + '</td><td class="num">' + x.wd + '</td><td class="num">' + fmtCny(x.th) + '</td><td class="num">' + (x.ot > 0 ? fmtCny(x.ot) : '<span class="muted">—</span>') + '</td><td class="num">' + fmtCny(x.act) + '</td><td class="num"><span class="' + (q < 0.7 || q > 1.3 ? 'bad' : Math.abs(q - 1) > 0.1 ? 'warn' : '') + '">' + q.toFixed(3) + '</span></td></tr>'; }).join('') +
+          '</tbody></table></div><div class="muted" style="margin-top:6px">某个月的实际明显偏低时，先看那个月的执行列是不是还没记全、PO 明细是不是都导进来了。加班和调休是同一笔钱在月份之间挪（加班的当月多花、调休的当月少花），所以看出勤要拿同类月份比。</div>'
+        : '<div class="muted">还没有已记全的月份，出勤系数用的是参数里的值。</div>');
+  } else need = '<div class="muted" style="margin-top:8px">没有 PO 团队配置：月度需求 = 近 3 月实际月均 × 按工作日折算（' + fmtCny(c.poAvg) + '/月）。把团队 Excel 放进数据集根目录，就会改用人数 × 单价来算。</div>';
   const ymTxt = ym => ym.slice(0, 4) + '年' + (+ym.slice(5, 7)) + '月';
   const ymNow = Y + '-' + String(curMo2).padStart(2, '0');
   const planEffect = p => {
@@ -3501,7 +3558,10 @@ function renderData() {
     pf('meta-fx', '汇率', m.fxRate, '0.01', '规划里的万美金折成人民币') +
     pf('meta-target', '默认执行率目标（%）', m.execRateTarget * 100, '0.5', nDefault ? '没单独设目标的 ' + nDefault + ' 个来源在用它；各来源自己的目标在规划表里设' : '各来源都设了自己的目标，这个现在没人用') +
     pf('meta-bonus', '12 月年终奖扣减（几个月的月均）', m.bonusMonths, '0.5', '年终清算 = 11 月 + 12 月 + 这几个月') +
-    pf('meta-attend', '出勤系数（PO 预测用）', m.attendFactor != null ? m.attendFactor : 1, '0.05', '1 = 满勤；和校准系数一起决定 PO 的预测') +
+    pf('meta-otpeople', '上线周的周末加班：每场几个人', m.otPeople != null ? m.otPeople : 12, '1', '加班一天按 1 倍单价计入当月；加班只能换调休，所以全年的钱不变，只是把消耗在月份之间挪') +
+    '<label class="field"><span class="field-label">没有上线的月份</span><input id="meta-otskip" data-param="1" type="text" value="' + esc(c.team.otSkip.join(',')) + '" placeholder="如 2,6"><span class="sub">这些月份没有加班；用逗号隔开</span></label>' +
+    pf('meta-attend', '平月的出勤系数（实际数不可信时用它）', m.attendFactor != null ? m.attendFactor : 1, '0.05', '平时有事才休的月份。正常情况下自动从近 3 个平月的实际反推，这里只用在上不了自动的时候') +
+    pf('meta-fest', '春节当月和 1 月的出勤系数（还没有实际数时用它）', m.festAttend != null && +m.festAttend > 0 ? m.festAttend : 0.9, '0.05', '调休到次年 1 月作废，大家集中在过年前后休。有过年月份的实际数后自动反推') +
     pf('meta-freq', '数据更新提醒（天）', state.meta.updateFreqDays || 14, '1', '超过这么多天没导入平台数据，首页就提醒') +
     '</div><div class="muted" id="paramMsg" style="margin-top:6px">' + (Date.now() - paramSavedAt < 4000 ? '<span style="color:var(--green)">✓ 已保存</span>' : '改完点一下别处就保存。') + '</div>' + wdHtml;
 
