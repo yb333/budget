@@ -258,6 +258,19 @@ td.ops{white-space:nowrap;text-align:right}
 .tbl-health tr.sub-plan td{background:#fbfcfe;font-size:12px}
 .tbl tr.flash td{animation:rowFlash 1.8s}
 @keyframes rowFlash{0%,55%{background:var(--amber-bg)}100%{background:transparent}}
+/* v1.11：本期结论（首页第一块）——一行总结 + 执行率 / 钱 / 要你处理 */
+.verdict{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:12px;padding:10px 16px;margin-bottom:10px;background:#fff}
+.verdict.v-ok{border-left-color:var(--green)}
+.verdict.v-warn{border-left-color:var(--amber)}
+.verdict.v-bad{border-left-color:var(--red)}
+.v-head{font-size:14px;line-height:1.65}
+.v-head .v-lab{font-weight:700;margin-right:8px}
+.v-ok .v-head b{color:var(--green)}.v-warn .v-head b{color:var(--amber)}.v-bad .v-head b{color:var(--red)}
+.v-rows{margin-top:6px;font-size:13px}
+.v-row{display:flex;align-items:baseline;gap:8px;padding:3px 0}
+.v-k{flex:0 0 64px;color:var(--muted)}
+.v-row .tag{flex:0 0 auto}
+.v-t{flex:1 1 auto;min-width:0;line-height:1.6}
 #paramCard .form-grid{grid-template-columns:1fr}
 #paramCard .field{gap:3px}
 /* ===== 页内提示 ===== */
@@ -298,6 +311,7 @@ td.ops{white-space:nowrap;text-align:right}
 </div>
 <main>
   <section id="tab-now" class="tab-panel active">
+    <div id="verdictBox"></div>
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
     <div id="newYearBox"></div>
@@ -3196,6 +3210,84 @@ function walletHtml(c, d) {
   });
   return html + '</tbody></table></div><div class="muted" style="margin-top:6px">现在剩余 = 到账 − 已执行 − 平台预测的在途部分（执行表的口径）；「已安排到年底」= 按本页的建议，到年底从这个钱包要花掉的钱（含 1 月 PO），其余就是年底剩下的。</div>';
 }
+/* ---- 本期结论（首页第一块）：以现在的时间节点回答三件事——有没有执行率风险、有没有钱不够的风险、照着这个月的安排做是不是就没事。
+   全部出自已有的推演，不需要额外输入（用户 2026-11-26：信息太多，要先看到综合结论）。结论分三级（用户定）：
+     ✓ 照做就没事：考核来源年底都达标，钱到年底也够
+     ⚠ 照做，再把下面的事处理掉就没事：到不了目标的差的钱都是还没到账的；钱会不够，但有可等的钱（规划了没到账的、冻在 PO 里的）
+     ✗ 照做也不行：有来源的钱只能靠再挂 OD 花、或钱都到了也不够；钱不够又没有可等的 ---- */
+function buildVerdict(c, d) {
+  if (!d || !c.snap) return null;
+  const O = d.od, J = d.jan;
+  const miss = d.rows.filter(r => r.assessed && !r.hit && r.short > 3000);   // 只差零头的不算
+  let A = 0, B = 0, C = 0; const needBa = new Set(), bNames = [], cNames = [];   // 到不了目标的钱按原因拆：还没到账 / 只能靠再挂 OD 花 / 钱都到了也不够
+  miss.forEach(r => {
+    let need = r.short;
+    const a = Math.min(need, r.un || 0); need -= a;
+    const b = Math.min(need, r.odAble); need -= b;
+    A += a; B += b; C += need;
+    if (a > 3000) needBa.add(r.code ? 'c:' + r.code : 'n:' + r.name);
+    if (b > 3000) bNames.push(r.name);
+    if (need > 3000) cNames.push(r.name);
+  });
+  d.baList.forEach(b => needBa.add(b.code ? 'c:' + b.code : 'n:' + b.name));   // 待办里在催的也算
+  const baUnits = d.baUnits.filter(u => u.un > u.tol && needBa.has(u.code ? 'c:' + u.code : 'n:' + u.name));
+  const baAmt = sum(baUnits, u => u.un);
+  const frozen = d.fund.cash.refundPast + d.fund.cash.refundCur, short = d.fund.cash.short, near = d.fund.cash.shortNear;
+  const execLv = !miss.length ? 'ok' : (B + C <= 3000 ? 'warn' : 'bad');
+  const levers = d.ungrantedTotal + frozen;   // 可等的钱
+  const moneyLv = !short ? 'ok' : (levers >= short.short - 1000 ? 'warn' : 'bad');
+  const ex = [], mo = [];
+  if (miss.length) {
+    const cp = [];
+    if (B > 3000) cp.push(fmtCny(B) + ' 的钱只能靠再挂 OD 花掉');
+    if (C > 3000) cp.push(fmtCny(C) + ' 钱都到了也不够，要调低目标');
+    ex.push(execLv === 'warn' ? miss.length + ' 个来源到不了目标，原因都是钱还没到账——到了就能达标' : miss.length + ' 个来源照做也到不了目标：' + cp.join('；'));
+  }
+  if (short) mo.push((near ? '两个月内手里的钱就不够' : '钱会不够') + '：到 ' + esc(short.when) + '（' + esc(short.label) + '）时差 ' + fmtCny(short.short) +
+    (moneyLv === 'warn' ? '，可等的钱回来就够' : '，就算规划的钱都到账、冻结的都回来也还差 ' + fmtCny(Math.max(0, short.short - levers))));
+  const lv = execLv === 'bad' || moneyLv === 'bad' ? 'bad' : (execLv === 'ok' && moneyLv === 'ok') ? 'ok' : 'warn';
+  const head = lv === 'ok' ? '照着这个月的安排做就没事：' + (d.assessed ? '考核来源年底都能达标' : '没有设考核目标的来源') + '，钱到年底也够'
+    : lv === 'warn' ? '照着这个月的安排做，再把下面的事处理掉就没事：' + ex.concat(mo).join('；')
+    : '照着这个月的安排做也不行：' + ex.concat(mo).join('；');
+  const cp2 = [];
+  if (A > 3000) cp2.push(fmtCny(A) + ' 是钱还没到账');
+  if (B > 3000) cp2.push(fmtCny(B) + ' 只能靠再挂 OD 花');
+  if (C > 3000) cp2.push(fmtCny(C) + ' 钱都到了也不够');
+  const evs = d.fund.cash.events, minEv = evs.length ? evs.reduce((m, e) => e.avail < m.avail ? e : m, evs[0]) : null;
+  const teamBad = c.team.hasPoCfg && (c.team.attN.bad || c.team.attF.bad);
+  const acts = [];
+  if (baUnits.length) acts.push('<b>催 BA 到账</b> ' + fmtCny(baAmt) + '（' + baUnits.map(u => esc(u.name)).join('、') + '）');
+  if (O && O.lateRefund.length) acts.push('<b>抓紧验收</b>：年终清算有 ' + fmtCny(sum(O.lateRefund, p => p.refundCur)) + ' 要等 11 月 PO 的钱（12 月下旬才到账），时间很紧');
+  else if (short && frozen > 1000) acts.push('<b>催验收</b>：冻在 PO 里的 ' + fmtCny(frozen) + ' 验收后才回来');
+  if (B > 3000) acts.push('<b>再挂约 ' + Math.ceil(B / Math.max(d.short.rate, 1)) + ' 个 OD</b>：' + fmtCny(B) + ' 的钱还在 IT 预算项里、只能靠 OD 花（' + bNames.map(esc).join('、') + '），写进变动计划');
+  if (C > 3000) acts.push('<b>调低目标</b>：' + fmtCny(C) + ' 钱都到了也不够（' + cNames.map(esc).join('、') + '）');
+  if (d.yearEnd && J && J.short > 500) acts.push('<b>1 月 PO 缺 ' + fmtCny(J.short) + '</b>：调低某个来源的目标就能补足');
+  if (c.checks.length || teamBad) acts.push('<b>先核对数据</b>：' + [c.checks.length ? '两表不符 ' + c.checks.length + ' 项' : '', teamBad ? '团队配置和实际对不上' : ''].filter(Boolean).join('、') + '——数据不对，上面的结论不可靠');
+  return {
+    lv, head, acts,
+    rows: [
+      { k: '执行率', lv: execLv, tag: execLv === 'ok' ? '没风险' : '有风险', goto: 'srcHealth',
+        txt: !d.assessed ? '没有设考核目标的来源' : d.hit + '/' + d.assessed + ' 达标' +
+          (miss.length ? '，到不了的差 ' + fmtCny(sum(miss, r => r.short)) + (cp2.length === 1 && A > 3000 ? '，全部因为 ' + fmtCny(baAmt || A) + ' 规划了还没到账' : cp2.length ? '，其中 ' + cp2.join('、') : '')
+            : '，总体预计年底 ' + fmtPct(c.forecastRate) + '（目标 ' + fmtPct(d.weightedTarget) + '）') },
+      { k: '钱', lv: moneyLv, tag: moneyLv === 'ok' ? '没风险' : '有风险', goto: 'opsCash',
+        txt: !short ? '到年底都够' + (minEv ? '，最紧的时候（' + esc(minEv.when) + '）手里还有 ' + fmtCny(minEv.avail) : '')
+          : '到 ' + esc(short.when) + '（' + esc(short.label) + '）时差 ' + fmtCny(short.short) + (short.near ? '，就在这两个月内' : '') + '；可等的钱：' +
+            (function() { const p = []; if (d.ungrantedTotal > 1000) p.push('规划了还没到账 ' + fmtCny(d.ungrantedTotal)); if (frozen > 1000) p.push('冻在 PO 里 ' + fmtCny(frozen)); return p.length ? p.join('、') : '没有'; })() }
+    ]
+  };
+}
+function renderVerdict(c, d) {
+  const el = $('#verdictBox'); if (!el) return;
+  const v = buildVerdict(c, d);
+  if (!v) { el.innerHTML = ''; return; }
+  const mark = { ok: '✓', warn: '⚠', bad: '✗' }, tagOf = lv => 'tag ' + (lv === 'ok' ? 't-green' : lv === 'warn' ? 't-amber' : 't-red');
+  el.innerHTML = '<div class="verdict v-' + v.lv + '"><div class="v-head"><span class="v-lab">本期结论</span><span class="muted">截至 ' + esc(String(c.snap.date || '').slice(5)) + '</span>　<b>' + mark[v.lv] + ' ' + v.head + '</b></div><div class="v-rows">' +
+    v.rows.map(r => '<div class="v-row"><span class="v-k">' + r.k + '</span><span class="' + tagOf(r.lv) + '">' + r.tag + '</span><span class="v-t">' + r.txt + '</span><a class="lnk" data-action="goto:anchor" data-target="' + r.goto + '">明细 ↓</a></div>').join('') +
+    '<div class="v-row"><span class="v-k">要你处理</span><span class="' + (v.acts.length ? tagOf(v.lv === 'bad' ? 'bad' : 'warn') : tagOf('ok')) + '">' + (v.acts.length ? v.acts.length + ' 件' : '没有') + '</span><span class="v-t">' +
+      (v.acts.length ? v.acts.map(a => '<div>' + a + '</div>').join('') : '照这个月的待办做就行') + '</span><a class="lnk" data-action="goto:anchor" data-target="nowTodo">去待办 ↓</a></div>' +
+    '</div></div>';
+}
 function renderNow() {
   const c = calc(), Y = curYear(), m = yearParams(Y);
   $('#yearBadge').textContent = Y + ' 年度';
@@ -3216,6 +3308,7 @@ function renderNow() {
     sb.style.display = ''; tabNow.classList.add('no-data');
   } else { ob.innerHTML = ''; sb.innerHTML = ''; sb.style.display = 'none'; tabNow.classList.remove('no-data'); }
   const d = c.poDecision, P = d && d.po, J = d && d.jan, O = d && d.od;
+  renderVerdict(c, d);   // 本期结论：首页第一块
 
   /* ---- 本次导入发现了什么（自动和上一次导入比，不用点任何东西；明细点开才显示） ---- */
   {

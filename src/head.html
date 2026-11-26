@@ -258,6 +258,19 @@ td.ops{white-space:nowrap;text-align:right}
 .tbl-health tr.sub-plan td{background:#fbfcfe;font-size:12px}
 .tbl tr.flash td{animation:rowFlash 1.8s}
 @keyframes rowFlash{0%,55%{background:var(--amber-bg)}100%{background:transparent}}
+/* v1.11：本期结论（首页第一块）——一行总结 + 执行率 / 钱 / 要你处理 */
+.verdict{border:1px solid var(--line);border-left:4px solid var(--line);border-radius:12px;padding:10px 16px;margin-bottom:10px;background:#fff}
+.verdict.v-ok{border-left-color:var(--green)}
+.verdict.v-warn{border-left-color:var(--amber)}
+.verdict.v-bad{border-left-color:var(--red)}
+.v-head{font-size:14px;line-height:1.65}
+.v-head .v-lab{font-weight:700;margin-right:8px}
+.v-ok .v-head b{color:var(--green)}.v-warn .v-head b{color:var(--amber)}.v-bad .v-head b{color:var(--red)}
+.v-rows{margin-top:6px;font-size:13px}
+.v-row{display:flex;align-items:baseline;gap:8px;padding:3px 0}
+.v-k{flex:0 0 64px;color:var(--muted)}
+.v-row .tag{flex:0 0 auto}
+.v-t{flex:1 1 auto;min-width:0;line-height:1.6}
 #paramCard .form-grid{grid-template-columns:1fr}
 #paramCard .field{gap:3px}
 /* ===== 页内提示 ===== */
@@ -298,6 +311,7 @@ td.ops{white-space:nowrap;text-align:right}
 </div>
 <main>
   <section id="tab-now" class="tab-panel active">
+    <div id="verdictBox"></div>
     <div id="onboard"></div>
     <div class="summary-bar" id="summaryBar"></div>
     <div id="newYearBox"></div>
