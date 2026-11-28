@@ -3,6 +3,7 @@
 const LS_KEY = 'budgetDash.v3';
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
+const PO_START_DAY = 20, PO_DUE_DAY = 25;   // 每月 20 号启动下月 PO 的下发流程，25 号前下完（用户 2026-11-29；这两个日子不做成参数）
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => 'x' + Math.random().toString(36).slice(2, 9);
 const todayStr = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
@@ -1214,7 +1215,6 @@ function calc() {
   const m = yearParams(Y), fx = m.fxRate;
   const otPeople = Math.max(0, +m.otPeople || 0);                                   // 上线周周末加班的人数（按 1 倍单价计费）
   const otSkip = String(m.otSkip != null ? m.otSkip : '2,6').split(/[,，、\s]+/).filter(Boolean).map(Number);   // 没有上线的月份
-  const festDef = (+m.festAttend > 0) ? +m.festAttend : 0.9;                        // 春节当月和 1 月的出勤系数（还没有实际数时用）
   const plansY = plansOf(Y);
   const byDate = (a, b) => a.date < b.date ? -1 : 1;
   const snaps = [...(state.execSnaps || [])].filter(s => inYear(s.date, Y)).sort(byDate);
@@ -1290,6 +1290,7 @@ function calc() {
   let timeProg = 1;
   if (now < y0) timeProg = 0; else if (now < y1) timeProg = (now - y0) / (y1 - y0);
   const curM = now.getFullYear() === Y ? now.getMonth() + 1 : (now.getFullYear() > Y ? 13 : 0);
+  const poDue = { start: PO_START_DAY, due: PO_DUE_DAY, late: now.getDate() > PO_DUE_DAY, inWindow: now.getDate() >= PO_START_DAY && now.getDate() <= PO_DUE_DAY };   // 下月 PO：20 号启动下发流程，25 号前下完
 
   /* ---- 工作日（官方精确表 → 推算引擎；可逐月覆盖） ---- */
   const wdDefaultY = (yy, mo) => {
@@ -1409,7 +1410,8 @@ function calc() {
     //   B   = 服务期之外的预测：没花掉，验收后返还（往月 PO 的预测全在这一类）
     const own = poOwnMonths(r, asOf);
     if (!own.size) own.add(asOf);   // 费用起始缺失：按当月在执行处理
-    const inf = { own, noStart: !r.startDate, E: 0, cur: 0, fut: 0, futM: {}, B: 0, w: 0, frozen: 0, refund: 0, willExec: 0 };
+    const inf = { own, noStart: !r.startDate, E: 0, cur: 0, fut: 0, futM: {}, B: 0, early: 0, w: 0, frozen: 0, refund: 0, willExec: 0 };
+    const fo0 = Math.min(...own);   // 服务期的第一个月
     Object.entries(r.months).forEach(([mm, v]) => {
       const mi = +mm;
       if (mi < asOf) { poMonthlyAct[mi] = (poMonthlyAct[mi] || 0) + v; poActByCode[r.budgetCode] = (poActByCode[r.budgetCode] || 0) + v; inf.E += v; }
@@ -1417,9 +1419,11 @@ function calc() {
         poMonthlyFc[mi] = (poMonthlyFc[mi] || 0) + v;
         if (mi === asOf && own.has(mi)) inf.cur += v;
         else if (own.has(mi)) { inf.fut += v; inf.futM[mi] = (inf.futM[mi] || 0) + v; }
+        else if (fo0 > asOf && mi < fo0) inf.early += v;   // 服务期还没开始的 PO（提前几天下下月的）：提前落进当前月预测列的钱是这张 PO 的，不是会返还的钱
         else inf.B += v;
       }
     });
+    if (inf.early > 0) { inf.fut += inf.early; inf.futM[fo0] = (inf.futM[fo0] || 0) + inf.early; }   // 归到服务期的第一个月
     info.set(r, inf);
     const g = byPo[r.poNo] = byPo[r.poNo] || { poNo: r.poNo, resName: r.resName, status: r.status, startDate: r.startDate, endDate: r.endDate || '', amount: 0, E: 0, rows: [] };
     g.amount = Math.max(g.amount, r.amount || 0);   // PO 金额是 PO 口径（每行重复同一个数）→ 只取一次，不能相加
@@ -1486,25 +1490,43 @@ function calc() {
     const yp0 = yearParams(yy), exP = new Set((yp0.excludedPos || []).map(k => String(k).split('|')[0])), exC = yp0.excluded || [];
     return sum(pd.rows.filter(r => !exP.has(r.poNo) && exC.indexOf(r.budgetCode) < 0), r => +(r.months[mo] || 0));
   };
-  const attOf = kind => {   // 一种月份的出勤系数 { months: 用了哪几个月, r: 实际 ÷ 理论, auto: 是不是从实际数反推的, v: 采用的值, bad: 有实际数但不可信 }
-    const nMax = kind === 'normal' ? 3 : 12, mos = [];
-    for (let yy = Y; yy >= Y - 3 && mos.length < nMax; yy--) {
-      let found = 0;
-      for (let mo = 12; mo >= 1 && mos.length < nMax; mo--) {
-        if ((kind === 'normal') === isFest(yy, mo)) continue;
-        if (yy === Y && mo >= asOf) continue;                 // 这个月还没记全
-        const act = actOf(yy, mo), wd = wdOf(yy, mo), th = poDailyAt(yy, mo) * wd, ot = otCost(yy, mo), base = th + ot;
-        if (!(act > 0) || !(base > 0)) continue;
-        mos.push({ yy, mo, wd, th, ot, base, act }); found++;
-      }
-      if (found && kind === 'fest') break;                    // 春节当月和 1 月：只看最近一个有数据的年份（同一年的放在一起）
+  const monthRec = (yy, mo) => {   // 某年某月的原始数：实际执行，和理论（按团队配置算的满勤消耗 + 加班）；这个月没有实际数返回 null
+    const act = actOf(yy, mo), wd = wdOf(yy, mo), th = poDailyAt(yy, mo) * wd, ot = otCost(yy, mo), base = th + ot;
+    return (act > 0 && base > 0) ? { yy, mo, wd, th, ot, base, act } : null;
+  };
+  const attOf = () => {   // 平月的出勤系数 { months: 用了哪几个月, r: 实际 ÷ 理论, auto: 是不是从实际数反推的, v: 采用的值, bad: 有实际数但不可信 }
+    const mos = [];
+    for (let yy = Y; yy >= Y - 3 && mos.length < 3; yy--) for (let mo = 12; mo >= 1 && mos.length < 3; mo--) {
+      if (isFest(yy, mo)) continue;
+      if (yy === Y && mo >= asOf) continue;                 // 这个月还没记全
+      const x = monthRec(yy, mo); if (x) mos.push(x);
     }
     const act = sum(mos, x => x.act), base = sum(mos, x => x.base), r = base > 0 ? act / base : null;
-    const ok = r != null && r >= (kind === 'normal' ? 0.7 : 0.5) && r <= 1.3;
-    return { months: mos, r, auto: ok, v: ok ? r : (kind === 'normal' ? attend : festDef), bad: r != null && !ok };
+    const ok = r != null && r >= 0.7 && r <= 1.3;
+    return { months: mos, r, auto: ok, v: ok ? r : attend, bad: r != null && !ok };
   };
-  const attN = attOf('normal'), attF = attOf('fest');
-  const attendOf = (yy, mo) => isFest(yy, mo) ? attF : attN;
+  const attN = attOf();
+  // 过年月份（1 月、春节当月）的出勤 = 现在的平月出勤 × 往年同一种月份「相对它旁边平月」的比例（用户 2026-11-29 确认：默认按平月算）。
+  // 只看相对：直接拿往年的实际 ÷ 理论，会被团队人数的变化带偏（人数变了又没记在变动计划里，理论是按现在的人数算的）。
+  // 1 月和春节当月分开算：春节在哪个月年年不同，明年春节在 2 月时，1 月只参考往年的 1 月
+  const attFest = kind => {
+    const key = kind === 'cny' ? cnyMonth : () => 1;
+    for (let yy = Y; yy >= Y - 3; yy--) {
+      const fmo = key(yy), fm = (yy === Y && fmo >= asOf) ? null : monthRec(yy, fmo);   // 这一年同一种月份的数；今年的还没记全就往下找
+      if (!fm) continue;
+      const refs = [];   // 同一年里紧挨着的平月（先往后找，不够再往前找）
+      for (let d = 1; d <= 12 && refs.length < 3; d++) { const m2 = fmo + d, x = (m2 <= 12 && !isFest(yy, m2)) ? monthRec(yy, m2) : null; if (x) refs.push(x); }
+      for (let d = 1; d <= 12 && refs.length < 3; d++) { const m2 = fmo - d, x = (m2 >= 1 && !isFest(yy, m2)) ? monthRec(yy, m2) : null; if (x) refs.push(x); }
+      const refR = refs.length ? sum(refs, x => x.act) / sum(refs, x => x.base) : null;   // 旁边平月的 实际 ÷ 理论
+      const rel = (refR != null && refR > 0) ? (fm.act / fm.base) / refR : null;          // 这种月份相对旁边平月的出勤
+      const ok = rel != null && rel >= 0.5 && rel <= 1.3;
+      return { months: [fm], refs, r: fm.act / fm.base, refR, rel, auto: ok, v: ok ? attN.v * rel : attN.v, bad: rel != null && !ok };
+    }
+    return { months: [], refs: [], r: null, refR: null, rel: null, auto: false, v: attN.v, bad: false };
+  };
+  const attJan = attFest('jan'), attCny = attFest('cny');
+  const attF = { months: attJan.months.concat(attCny.months), bad: attJan.bad || attCny.bad, r: attJan.r != null ? attJan.r : attCny.r, rel: attJan.rel != null ? attJan.rel : attCny.rel, auto: attJan.auto && attCny.auto, v: attJan.v };   // 两个过年月份合在一起的视图（提醒用）
+  const attendOf = (yy, mo) => !isFest(yy, mo) ? attN : (mo === 1 && cnyMonth(yy) !== 1 ? attJan : attCny);
   const needPo = mo => hasPoCfg ? basePo(Y, mo) * attendOf(Y, mo).v : (poAvg > 0 && poAvgWd > 0 ? poAvg * workdays(mo) / poAvgWd : 0);   // 团队这个月的消耗（期望值，不含安全垫）
   const cushionPo = mo => hasPoCfg ? poDailyAt(Y, mo) * (attendOf(Y, mo).auto ? 0.5 : 1) : (poAvg > 0 && poAvgWd > 0 ? poAvg / poAvgWd * 0.5 : 0);   // 安全垫
   const advisePo = mo => needPo(mo) + cushionPo(mo);          // 建议下的金额
@@ -1521,6 +1543,11 @@ function calc() {
     g.cur = sum(g.rows, r => info.get(r).cur);
     g.fut = sum(g.rows, r => info.get(r).fut);
     g.B = sum(g.rows, r => info.get(r).B);
+    // 服务期只有一个月、还没开始的 PO（每月那张）：按 PO 总额认（用户 2026-11-29：总会早几天下，钱可能只填了一部分在月度列里）
+    if (g.status === 'OPEN' && g.amount > 0 && g.own.length === 1 && g.own[0] > asOf) {
+      const diff = Math.max(0, g.amount - g.E) - g.fut;
+      if (diff > 0.5) { const i0 = info.get(g.rows[0]); i0.fut += diff; i0.futM[g.own[0]] = (i0.futM[g.own[0]] || 0) + diff; g.fut += diff; }
+    }
     g.willExec = g.cur * kNeed + g.fut;
     if (g.status !== 'OPEN') { g.frozen = 0; g.refund = 0; }
     else if (g.amount > 0) {
@@ -1808,45 +1835,58 @@ function calc() {
   if (started) for (let mo = curM; mo <= 12; mo++) { if (mo < 12) allocPoMonth(mo + 1, mo === curM ? nextDetail : null); allocOdMonth(mo); }
   const odWinEnd = winEndOf(Math.max(curM, 1));
   const odWinNeed = started ? sum(Object.entries(odEst), ([mo, v]) => +mo <= odWinEnd ? v : 0) : 0;
-  // 1 月 PO：用达标之后剩下的钱（只认 IT外包 剩余，OD 额度要先调回）；不够再用验收返还
+  // 1 月 PO 的钱只能从两类预算项里来（用户 2026-11-29 确认）：到年底能达标的（按推演的年底结果算）、和不考核的。
+  // 没达标的预算项里剩下的钱留给今年——12 月的 PO 已经下了，只能走 OD——不算 1 月的钱。
+  // 用的时候依次是：IT外包 剩余 → OD 额度（要先调回）→ 年底清算用不完的验收返还
+  const endExecOf = r => r.exec + r.willExec + (r.exclExec || 0) + r.po + r.odExec;            // 年底预计执行（含剔除出决策的 PO 还会执行的）
+  const hitOf = r => !r.assessed || endExecOf(r) >= r.planCny * r.target - Math.min(3000, (r.planCny || 0) * 0.005);   // 按配置里的安排，年底达不达标（零头以内算达标）
   const janItems = [];
   let janReserve = 0, janFromRefund = 0, janOdBack = 0, janFromCur = 0;
+  const leftAllOf = r => sum(r.wallets, w => Math.max(0, w.itw - (r.usedItw[w.proj] || 0))) + sum(r.wallets, w => odAvailOf(r, w)) + refundLeftC(r);   // 这个来源手里还没安排用途的钱：IT外包 剩余 + OD 额度 + 没用掉的返还
+  const shortNeedOf = r => r.assessed ? Math.max(0, r.planCny * r.target - endExecOf(r)) : 0;                                              // 到目标还差多少
+  // 能给 1 月 PO 的 = 手里的钱超出「到目标还差的钱」的部分。没达标的预算项：差的那部分留给今年（只能走 OD），超出目标的部分是结余、可以给 1 月
+  // 每个来源能给 1 月 PO 的上限：在 1 月分配之前就定好。之后钱被拿走，剩余会跟着变，不能再按剩余算（否则等于把拿走的扣了两次）
+  const janCap0 = new Map(srcRows.map(r => [r, Math.max(0, leftAllOf(r) - shortNeedOf(r))]));
+  const janTaken = new Map();   // 已经从这个来源拿给 1 月 PO 的钱
+  const janRoom = r => (janCap0.get(r) || 0) - (janTaken.get(r) || 0);
   if (curM >= 11) {
     let left = needJan;
     srcRows.slice().sort((a, b) => sum(b.wallets, w => Math.max(0, w.itw - (b.usedItw[w.proj] || 0))) - sum(a.wallets, w => Math.max(0, w.itw - (a.usedItw[w.proj] || 0)))).forEach(r => r.wallets.forEach(w => {
-      if (left <= 0) return;
-      const g = Math.min(Math.max(0, w.itw - (r.usedItw[w.proj] || 0)), left);
+      if (left <= 0 || janRoom(r) <= 0) return;
+      const g = Math.min(Math.max(0, w.itw - (r.usedItw[w.proj] || 0)), left, janRoom(r));
       if (g <= 0) return;
-      r.usedItw[w.proj] = (r.usedItw[w.proj] || 0) + g; r.used += g; r.jan += g; left -= g;
+      r.usedItw[w.proj] = (r.usedItw[w.proj] || 0) + g; r.used += g; r.jan += g; left -= g; janTaken.set(r, (janTaken.get(r) || 0) + g);
       janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g });
     }));
     srcRows.forEach(r => r.wallets.forEach(w => {   // 仍然不够：年底清算后用不上的 OD 额度也调回 IT外包（下 PO 前要调，卡片上标明）
-      if (left <= 0) return;
-      const g = Math.min(left, odAvailOf(r, w));
+      if (left <= 0 || janRoom(r) <= 0) return;
+      const g = Math.min(left, odAvailOf(r, w), janRoom(r));
       if (g <= 0) return;
-      r.usedOd[w.proj] = (r.usedOd[w.proj] || 0) + g; r.used += g; left -= g; janOdBack += g; r.jan += g;
+      r.usedOd[w.proj] = (r.usedOd[w.proj] || 0) + g; r.used += g; left -= g; janOdBack += g; r.jan += g; janTaken.set(r, (janTaken.get(r) || 0) + g);
       janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, odBack: g });
     }));
     srcRows.forEach(r => r.wallets.forEach(w => {   // 仍然不够：用验收返还的钱（先用往月 PO 的，再用 11 月 PO 多下的部分）
-      if (left <= 0) return;
-      const key = r.code + '|' + w.proj, g = Math.min(left, refundAllAvail(key));
+      if (left <= 0 || janRoom(r) <= 0) return;
+      const key = r.code + '|' + w.proj, g = Math.min(left, refundAllAvail(key), janRoom(r));
       if (g <= 0) return;
       const g1 = Math.min(refundAvail(key), g);
       useRefundKey(key, g);
-      left -= g; janFromRefund += g1; janFromCur += g - g1; r.jan += g;
+      left -= g; janFromRefund += g1; janFromCur += g - g1; r.jan += g; janTaken.set(r, (janTaken.get(r) || 0) + g);
       janItems.push({ code: r.code, name: r.decName, proj: w.proj, amt: g, fromRef: g1 > 0.5, fromCur: g - g1 > 0.5 });
     }));
     janReserve = needJan - left;
   }
   srcRows.forEach(r => {
-    r.endExec = r.exec + r.willExec + (r.exclExec || 0) + r.po + r.odExec;            // 年底预计执行（含剔除出决策的 PO 还会执行的）
+    r.endExec = endExecOf(r);
     r.rate = r.planCny ? r.endExec / r.planCny : null;
     r.tol = Math.min(3000, (r.planCny || 0) * 0.005);             // 零头：规划 0.5% 以内且不超过 ¥3,000
-    r.hit = r.assessed ? r.endExec >= r.planCny * r.target - r.tol : true;          // 按配置里的安排，年底达不达标
+    r.hit = hitOf(r);
     r.short = r.assessed ? Math.max(0, r.planCny * r.target - r.endExec) : 0;       // 年底还差多少
     r.left = r.funds - r.used;
     // 还差的钱里，这个来源手里还有多少（没花掉的钱 + 没用掉的返还）：这些钱只能靠再挂 OD 花掉；一分不剩才是真的钱不够
     r.odAble = r.assessed && !r.hit ? Math.min(r.short, r.left + refundLeftC(r)) : 0;
+    r.refundLeft = refundLeftC(r);   // 这个来源年底前会回来、还没安排用途的验收返还
+    r.keep = r.assessed && !r.hit ? Math.min(r.left + r.refundLeft, r.odAble) : 0;   // 留给今年的钱（到目标还差、手里还有的部分），不算花不完的余额
   });
   const odAvgRate = hasOdCfg ? theoryOd / Math.max(sum(odGroups, g => hcAt(g, Y, curMo)) + sum(virtualAt('od', Y, curMo), v => v.headcount), 1) : (odAvg || 0);   // 一个人一个月的 OD 成本
   // 达标缺口：按配置里的安排到年底还差多少。系统不替用户假设还会再挂 OD，只把缺口和"钱在哪"摆出来
@@ -1904,7 +1944,10 @@ function calc() {
   const assessedN = srcRows.filter(r => r.assessed).length;
   const hitN = srcRows.filter(r => r.assessed && r.hit).length;
 
-  const unspent = Math.max(0, sum(srcRows, r => r.left));
+  // 1 月 PO 之后还剩的（各预算项超出目标的部分；留给今年的那部分不算）= 手里还剩的钱（可支配 ＋ 没安排用途的返还）− 留给今年的
+  srcRows.forEach(r => { r.spare = Math.max(0, r.left + r.refundLeft - r.keep); });
+  const unspent = sum(srcRows, r => r.spare);
+  const keepYear = srcRows.filter(r => r.assessed && !r.hit && r.odAble > 500);   // 没达标的预算项里，今年还没花掉的钱（只能走 OD）
 
   /* ---- 钱够不够：按到账时间逐笔看。在途冻结的钱算进来，但按它回来的时间——
      现在可支配 →（每个月）下下月的 PO（20 号前后下单，只能用当时手里有的钱）→ 月底的 OD 扣减 → 返还到账
@@ -1922,7 +1965,7 @@ function calc() {
     };
     for (let mo = curM; mo <= 12; mo++) {
       const near = mo <= curM + 1;
-      if (mo <= 11) { const pm = poMonths.find(p => p.mo === mo + 1); if (pm && pm.need > 0.5) ev(mo === curM && now.getDate() > 20 ? '尽快' : mo + '-20 前', (pm.issued > 0.5 ? '补 ' : '下 ') + (mo + 1) + ' 月 PO', pm.need, 0, '', near); }
+      if (mo <= 11) { const pm = poMonths.find(p => p.mo === mo + 1); if (pm && pm.need > 0.5) ev(mo === curM && poDue.late ? '尽快' : mo + '-' + poDue.due + ' 前', '下 ' + (mo + 1) + ' 月 PO', pm.need, 0, '', near); }
       if (curM >= 11) {
         if (mo === 11) ev('11-30', '11 月底的 OD 扣减', odEst[mo] || 0, 0, '', near);
         if (mo === 12) {
@@ -2121,7 +2164,7 @@ shortList.forEach(x => { const r = srcRows.find(y => y.code === x.code && y.decN
       })(),
       // ③ 临时 OD 补缺口
       short: { total: shortTotal, able: shortAble, list: shortList, rate: odAvgRate, janAfterFill },   // 达标缺口：按配置里的安排到年底还差多少；able = 其中钱还在这些来源里、只能靠再挂 OD 花掉的
-      poNoFc,
+      poNoFc, keepYear,
       refundPast: sum(Object.values(refundPastByCode)),   // 往月 PO 的验收返还额（年底可用，前提是 12 月 15 日前验收）
       exclExec: poExclWill,   // 剔除出决策的 PO 还会执行的（别的团队在花，计入年底执行）
       yearPlan,               // 年底资金安排：每个钱包的进出、留给 1 月的理论上限
@@ -2171,10 +2214,14 @@ shortList.forEach(x => { const r = srcRows.find(y => y.code === x.code && y.decN
     poExcludedRows, poExclAct, poExclActByCode, poExclWill, poExclFrozen, poExclAgg, poExclWillM,
     odYearEnd: { manual: odYE, formula: hasOdCfg ? odDeduct(12) : odBase * odMult(12) },   // 年终清算：用户测算的总额（0 = 没填）和按人数测算的数
     workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
-      basePo, otCost, needPo, cushionPo, advisePo, attendOf, isFest, attN, attF, otPeople, otSkip,   // PO 月度需求：消耗 = basePo × 出勤系数；建议金额 = advisePo
+      basePo, otCost, needPo, cushionPo, advisePo, attendOf, isFest, attN, attF, attJan, attCny, otPeople, otSkip,   // PO 月度需求：消耗 = basePo × 出勤系数；建议金额 = advisePo
       hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) + sum(tempAt('od', yy, mo), v => v.headcount) }) },
     poAvg, poAvgWd, poWillExec: sum(Object.values(willExecByCode)),   // 在途 PO 里会执行掉的合计
-    today: { m: now.getMonth() + 1, d: now.getDate() },   // 今天几月几号：待办的截止时间要看日子，不能只知道月份
+    today: { m: now.getMonth() + 1, d: now.getDate() },
+    poDue,
+    dataAsOf: po ? po.asOf : null,   // 平台导出里的「当前月」（第一个预测列）
+    dataAhead: !!(po && curM >= 1 && curM <= 12 && po.asOf > curM),   // 导出里的当前月比电脑时间超前（月底平台先换了列）
+   // 今天几月几号：待办的截止时间要看日子，不能只知道月份
     projects, hasProj, byPo, poParsedOld, wallets, odRemainTotal, odOverList, specialRows,
     importNotes: state.importNotes || [],
     odAsOfText: snap ? 'OD 执行截至 ' + (+snap.date.slice(5, 7)) + ' 月（平台口径，滞后约 1 个月）' : ''
@@ -2251,7 +2298,13 @@ function moneyWhy(c, d) {
   return parts.join('；');
 }
 
-// 到不了目标（年底钱花不完）时的办法。用户 2026-11-28：每个月下多少 PO 是他定的，系统不会叫他多下；
+// 1 月 PO 缺口的原因：能不能靠调低目标补上。keepSum = 没达标的预算项里留给今年的钱（只能走 OD）——只有它能这样腾出来
+function janShortWhy(keepSum, canCut) {
+  return canCut ? '没达标的预算项里留给今年的钱有 ' + fmtCny(keepSum) + '，调低其中某个来源的目标就能补足（目标由你权衡）'
+    : '手里的钱其余都用在了今年的 PO 和 OD 上，调低目标也腾不出这么多；12 月下旬按能留的数下，团队 1 月可能紧一点';
+}
+
+// 到不了目标、钱在手里却花不掉时的办法。用户 2026-11-28：每个月下多少 PO 是他定的，系统不会叫他多下；
 // 办法只有两个——找别人多挂 OD；找别人帮他在自己的预算项下挂 PO（就是「剔除出决策」的那类 PO：不抵团队的 PO，执行计入执行率）
 function gapWays(d, amount) {
   const rate = d.short.rate || 0;
@@ -2272,9 +2325,9 @@ function buildAgenda(c, d, m) {
       if (J.toIssue > 0) add({ key: 'janPo:' + J.toIssue, due: '12-20 前', title: '下旬下 <b>1 月 PO</b>', amt: fmtCny(J.toIssue), lv: J.short > 0 ? 'amber' : '',
         note: J.short > 0 ? '<span style="color:var(--red)">结余缺 ' + fmtCny(J.short) + '</span>（团队 1 月需要 ' + fmtCny(J.need) + '）' : '✓ 今年的结余够 1 月整月，团队不断档', goto: 'opsPo' });
     } else if (P && P.toIssue > 0) {
-      const noFund = P.unfunded, late = c.today.m === c.curM && c.today.d > 20;   // 过了 20 号（下单的日子）还没下
-      add({ key: 'po:' + P.nextM + ':' + P.toIssue, due: late ? '尽快' : c.curM + '-20 前', title: '下 <b>' + P.nextM + ' 月 PO</b>', amt: fmtCny(P.toIssue), lv: noFund > 1000 ? 'red' : '',
-        note: '团队需求 ' + fmtCny(P.need) + (late ? '（已经过了 ' + c.curM + '-20）' : '') +
+      const noFund = P.unfunded, pd = c.poDue;   // 20 号启动下月 PO 的下发流程，25 号前下完
+      add({ key: 'po:' + P.nextM + ':' + P.toIssue, due: pd.late ? '尽快' : c.curM + '-' + pd.due + ' 前', title: '下 <b>' + P.nextM + ' 月 PO</b>', amt: fmtCny(P.toIssue), lv: noFund > 1000 ? 'red' : (pd.inWindow || pd.late ? 'amber' : ''),
+        note: '团队需求 ' + fmtCny(P.need) + '；' + pd.start + ' 号启动 PO 下发流程，' + pd.due + ' 号前下完' + (pd.inWindow ? '（现在是下发期）' : pd.late ? '（已经过了 ' + pd.due + ' 号，尽快）' : '') +
           (noFund > 1000 ? '；<span style="color:var(--red)">其中 ' + fmtCny(Math.round(noFund / 1000) * 1000) + ' 没有钱可出' + (why ? '——' + why : '') + '</span>' : '，金额和比例见下方'), goto: 'opsPo' });
     }
     /* 下 PO 之前：先把用不到的 OD 额度调回 IT外包 */
@@ -2306,17 +2359,21 @@ function buildAgenda(c, d, m) {
     if (c.poReturn > 0) add({ key: 'accept:' + c.openCnt, due: d.yearEnd && !d.isDec ? '12-15 前' : '尽快', title: '<b>催验收</b>', amt: c.openCnt + ' 张',
       note: '在途冻结 ' + fmtCny(c.poFrozen) + '，验收后返还 <b>' + fmtCny(c.poReturn) + '</b>' + (d.yearEnd ? '；12 月 15 日前完成，返还的钱才能用于 1 月 PO' : '；验收周期约 1 个月'), btn: 'goto:po', btnTxt: '看明细' });
     /* 年底 */
-    if (d.yearEnd && d.short.total > 0) { const gapSpend = sum(d.short.list, x => Math.min(x.short, (x.un || 0) + x.odAble)), gapWait = sum(d.short.list, x => Math.min(x.short, x.un || 0));   // 到不了目标的钱里：有对应的钱的（没到账的 ＋ 还在 IT 预算项里的）、其中还没到账的
-      add({ key: 'short:' + Math.round(d.short.total), due: '清算前', lv: d.short.able > 1000 ? 'amber' : 'red', title: '年底有 <b>' + fmtCny(d.short.total) + '</b> 花不完（到不了目标）', amt: d.short.list.length + ' 个来源' + (d.short.able > 1000 ? '，其中 ' + fmtCny(d.short.able) + ' 的钱还在' : ''),
-      note: d.short.list.map(x => { const a = Math.min(x.short, x.un || 0), rest = x.short - a, b = Math.min(rest, x.odAble), bits = [];
-        if (a > 1000) bits.push(fmtCny(a) + ' 还没到账——催 BA'); if (b > 1000) bits.push(fmtCny(b) + ' 的钱还在这个 IT 预算项里，只能靠 OD 花'); if (rest - b > 1000) bits.push(fmtCny(rest - b) + ' 的钱本身不够，都花了也到不了目标');
+    if (d.yearEnd && d.short.total > 0) { const gapSpend = sum(d.short.list, x => Math.min(x.short, (x.un || 0) + x.odAble)), gapWait = sum(d.short.list, x => Math.min(Math.max(0, x.short - x.odAble), x.un || 0));   // 到不了目标的钱里：有对应的钱的（钱在手里的 ＋ 没到账的）、其中要等钱的
+      add({ key: 'short:' + Math.round(d.short.total), due: '清算前', lv: d.short.able > 1000 ? 'amber' : 'red', title: '到年底有 <b>' + fmtCny(d.short.total) + '</b> 到不了目标', amt: d.short.list.length + ' 个来源' + (d.short.able > 1000 ? '，其中 ' + fmtCny(d.short.able) + ' 的钱还在' : ''),
+      note: d.short.list.map(x => { const b = Math.min(x.short, x.odAble), rest = x.short - b, a = Math.min(rest, x.un || 0), bits = [];   // 先看手里的钱够不够补到目标，不够的部分才是没到账
+        if (b > 1000) bits.push(fmtCny(b) + ' 的钱还在这个 IT 预算项里，只能靠 OD 花'); if (a > 1000) bits.push(fmtCny(a) + ' 还没到账——催 BA'); if (rest - a > 1000) bits.push(fmtCny(rest - a) + ' 的钱本身不够，都花了也到不了目标');
         return esc(x.name) + ' 差 ' + fmtCny(x.short) + (bits.length ? '（' + bits.join('；') + '）' : ''); }).join('、') +
         (gapSpend > 1000 ? '——' + gapWays(d, gapSpend) : '') + (gapWait > 1000 ? '；其中 ' + fmtCny(gapWait) + ' 的钱还没到账，先催 BA' : ''), goto: 'srcHealth' }); }
-    if (d.yearEnd && !d.isDec && J.short > 0) add({ key: 'janShort:' + Math.round(J.short), due: '12-20 前', lv: 'amber', title: '1 月 PO 缺 <b>' + fmtCny(J.short) + '</b>',
-      note: '达标后的结余只够 ' + fmtCny(J.reserve) + '，团队 1 月需要 ' + fmtCny(J.need) + '——调低某个来源的目标就能补足（目标由你权衡）', btn: 'goto:data', btnTxt: '去调目标', goto: 'opsYear' });
+    // 1 月的缺口能不能靠调低目标补上：只有「没达标的预算项里留给今年的钱」（keep）能这样腾出来，其余的钱今年的 PO、OD 已经用上了
+    if (d.yearEnd && !d.isDec && J.short > 0) { const keepSum = sum(d.rows, r => r.keep), canCut = keepSum >= J.short;
+      add({ key: 'janShort:' + Math.round(J.short), due: '12-20 前', lv: 'amber', title: '1 月 PO 缺 <b>' + fmtCny(J.short) + '</b>',
+        note: '各预算项超出目标的部分都给 1 月，只够 ' + fmtCny(J.reserve) + '；团队 1 月需要 ' + fmtCny(J.need) + '——' + janShortWhy(keepSum, canCut),
+        btn: canCut ? 'goto:data' : undefined, btnTxt: canCut ? '去调目标' : undefined, goto: canCut ? 'opsYear' : 'opsYeCalc' }); }
   }
   /* 数据与配置 */
   // 已经有「重读数据集」那条待办时不重复提醒（点哪条都是重新授权 + 扫描）
+  if (c.snap && c.dataAsOf != null && c.curM >= 2 && c.curM <= 12 && c.dataAsOf < c.curM) add({ key: 'staleMonth:' + c.curM, due: '尽快', lv: 'amber', title: '<b>该导入最新的平台数据了</b>', note: '电脑时间已经是 ' + c.curM + ' 月，数据还是 ' + c.dataAsOf + ' 月导出的——这个月的 PO、OD 扣减都还按上月的数据在算', btn: dirHandle ? 'dataset:scan' : 'import:open', btnTxt: dirHandle ? '扫描数据集' : '去导入' });
   if (dirHandle && datasetPerm !== 'granted' && (c.snap || c.po) && !parseVerNeed().some(parseKindHasData)) add({ key: 'dsPerm', due: '尽快', lv: 'amber', title: '<b>数据集文件夹要重新授权</b>', note: '浏览器没有这个文件夹的读取权限，打开时的自动扫描被跳过了——点一下重新授权并扫描，新放进来的文件才会导进来', btn: 'dataset:scan', btnTxt: '授权并扫描' });
   /* 挂载：规划 → IT 预算项（多对一）。平台数据导入后才看得出哪条没挂；平台上有、规划里没有的 IT 预算项另算一条 */
   const noMount = c.snap ? c.plansY.filter(p => !p.dead && wusdOf(p) > 0 && !p.code) : [];
@@ -2349,9 +2406,11 @@ function buildAgenda(c, d, m) {
   }
   if (c.checks.length) notes.push(['red', '两表不符', 'PO 明细汇总与执行表有 <b>' + c.checks.length + '</b> 项对不上（最大差额 ' + fmtCny(Math.max(...c.checks.map(k => Math.abs(k.diff)))) + '）', 'foldChecks']);
   if (c.grantChecks.length) notes.push(['amber', '授予流水对不上', '平台导出的授予流水与执行表「本年度授予」有 <b>' + c.grantChecks.length + '</b> 项不符', 'foldChecks']);
+  if (d && c.dataAhead) notes.push(['info', '数据比电脑时间超前', '平台导出里已经把 ' + c.dataAsOf + ' 月当成当月，电脑时间还是 ' + c.curM + ' 月。按电脑时间算的话，下月的 PO 还没开始执行——如果系统因此认错了下月的 PO，先把电脑时间核对一下，或等过了月底再导']);
   if (d && d.poNoFc.length) notes.push(['amber', '有 PO 认不出属于哪个月', d.poNoFc.map(g => '<b>' + esc(g.poNo) + '</b>（' + esc(g.name) + ' ' + fmtCny(g.amount) + (g.start ? '，' + esc(g.start) + (g.end ? ' ~ ' + esc(g.end) : '') : '') + '）').join('、') + '：有金额，但没有任何月度执行 / 预测金额——如果这是 12 月的 PO，系统没法把它算成「已下」。请到平台上核对这张 PO 的月度金额，重新导出 PO 明细', 'opsPo']);
   c.importNotes.filter(n => n && n.text).forEach(n => notes.push(['amber', '导入提醒', esc(n.text)]));
-  if (c.team.hasPoCfg && (c.team.attN.bad || c.team.attF.bad)) notes.push(['red', '团队配置和实际对不上', '近几月的实际执行 ÷ 理论 = <b>' + ((c.team.attN.bad ? c.team.attN : c.team.attF).r).toFixed(2) + '</b>，差得太离谱——先核对数据（PO 明细是不是都导进来了、执行列记全了没有）；这期间 PO 建议按参数里的出勤系数算，安全垫按一天日额', 'teamCard']);
+  if (c.team.hasPoCfg && c.team.attN.bad) notes.push(['red', '团队配置和实际对不上', '近几月的实际执行 ÷ 理论 = <b>' + c.team.attN.r.toFixed(2) + '</b>，差得太离谱——先核对数据（PO 明细是不是都导进来了、执行列记全了没有）；这期间 PO 建议按参数里的出勤系数算，安全垫按一天日额', 'teamCard']);
+  else if (c.team.hasPoCfg && c.team.attF.bad) notes.push(['amber', '往年过年月份的数不可信', (c.team.attJan.bad && c.team.attCny.bad ? '往年 1 月和春节当月' : c.team.attJan.bad ? '往年 1 月' : '往年春节当月') + '的实际执行 ÷ 理论 = <b>' + c.team.attF.r.toFixed(2) + '</b>，和旁边的平月比差得太离谱——先核对数据；过年月份的 PO 建议先按平月算，安全垫按一天日额', 'teamCard']);
   if (c.team.hasOdCfg && Math.abs(c.team.calibOd || 0) > 0.1) notes.push(['amber', '团队校准', 'OD 理论与近 3 月实际偏差 <b>' + fmtPct(c.team.calibOd) + '</b>（理论 ' + fmtCny(c.team.theoryOd) + ' vs ' + fmtCny(c.odAvg) + '）', 'teamCard']);
   if (c.curM <= 3 && c.po) {
     const crossPO = c.po.rows.filter(r => r.startDate && +String(r.startDate).slice(0, 4) === c.Y && +String(r.startDate).slice(5, 7) === 1);
@@ -2473,8 +2532,11 @@ function renderOps(c, d, m) {
     ? '来由：没有 PO 团队配置，按近 3 月的实际月均 × 按工作日折算 = ' + fmtCny(x.expect) + '，加安全垫 ' + fmtCny(x.cushion) + '（半天）= <b>' + fmtCny(x.need) + '</b>——把团队 Excel 放进数据集根目录，就会改用人数 × 单价来算'
     : '来由：（日额 ' + fmtCny(x.daily) + ' × ' + x.wd + ' 个工作日' + (x.ot > 0 ? ' ＋ 上线周加班 ' + fmtCny(x.ot) : '') + '）× 出勤 <b>' + x.attend.v.toFixed(3) + '</b> = ' + fmtCny(x.expect) +
     '，加安全垫 <b>' + fmtCny(x.cushion) + '</b>（' + (x.attend.auto ? '半天日额' : '一天日额') + '）= <b>' + fmtCny(x.need) + '</b>' +
-    '<span class="muted">　｜　' + (x.attend.auto ? '出勤从近 ' + x.attend.months.length + ' 个' + (x.fest ? '过年月份' : '平月') + '的实际反推' + (x.fest ? '' : '')
-      : x.attend.bad ? '<span class="bad">实际数和理论差得太离谱，先核对数据；出勤暂用参数里的值</span>' : (x.fest ? '过年前后集中调休，出勤单独记；' : '') + '这类月份还没有实际数，出勤用参数里的值') +
+    '<span class="muted">　｜　' +
+      (x.attend.auto
+        ? (x.fest ? '出勤 = 平月的 ' + c.team.attN.v.toFixed(3) + ' × 过年月份相对旁边平月的比例 ' + x.attend.rel.toFixed(2) + '（来自 ' + x.attend.months.map(m => (m.yy !== c.Y ? m.yy + ' 年 ' : '') + m.mo + ' 月').join('、') + ' 的实际，和它旁边平月的比较）' : '出勤从近 ' + x.attend.months.length + ' 个平月的实际反推')
+        : x.attend.bad ? '<span class="bad">' + (x.fest ? '过年月份的实际 ÷ 理论 = ' + x.attend.r.toFixed(2) + '、相对旁边平月 = ' + x.attend.rel.toFixed(2) + '，差得太离谱——按平月算' : '实际数和理论差得太离谱，先核对数据；出勤暂用参数里的值') + '</span>'
+        : (x.fest ? '按平月算（还没有往年的数可参考）' : '这类月份还没有实际数，出勤用参数里的值')) +
     ((x.histNext || x.hist) > 0 ? '　｜　近 3 月实际月均按工作日折算 ' + fmtCny(x.histNext || x.hist) : '') + '</span>';
   let html = '';
   /* ---- 年底预演（年中起）：按现在的安排推到 12 月 31 日会是什么样，让人早点知道往哪个方向调 ---- */
@@ -2486,32 +2548,49 @@ function renderOps(c, d, m) {
       (d.yearEnd ? '　｜　留给 1 月 PO <b>' + fmtCny(J.reserve) + '</b>' + (J.short > 0.5 ? '，<span class="bad">缺 ' + fmtCny(J.short) + '</span>' : ' ✓ 够') : '') +
       '<span class="muted">　详见下方 ② 和推演表</span></div>';
   }
-  /* ---- 年底测算（11、12 月，替代上面的「年底预演」）。用户 2026-11-28：12 月的 PO 已经下了，就要按现在的情况告诉他——
-         到年底还要花多少钱、冻结的钱回来以后还有多少花不了。数字全部出自推演；数据有问题也照样给数，只是标出来 ---- */
+  /* ---- 年底测算（11、12 月，替代上面的「年底预演」）。按用户 2026-11-29 确认的口径，按先后四步：
+         ① 12 月的 PO（已下多少）→ ② 到年底还要花多少、钱从哪来 → ③ 1 月 PO（按平月出勤算；钱只从年底能达标和不考核的预算项里来）
+         → ④ 花不完的是哪个预算项的钱。数字全部出自推演；数据有问题也照样给数，只是标出来 ---- */
   if (c.curM >= 11 && c.curM <= 12 && d.yearPlan) {
-    const YP = d.yearPlan, nov = c.curM === 11, R = YP.rest, rf = YP.refund;
-    const refundAll = YP.refundPast + YP.refundCur, refundYear = Math.max(0, refundAll - rf.od);   // 返还的钱里今年花不了的
+    const YP = d.yearPlan, nov = c.curM === 11, R = YP.rest, rf = YP.refund, pd = c.poDue;
+    const refundAll = YP.refundPast + YP.refundCur;
     const poN = P ? new Set(P.issuedList.map(x => x.poNo)).size : 0;
     const poSt = nov && P
       ? (P.issued > 0.5 ? '<span style="color:var(--green)">已下 <b>' + fmtCny(P.issued) + '</b>' + (poN ? '（' + poN + ' 张）' : '') + '，不用再下 ✓</span>' +
                         (P.issued < P.expect - 1000 ? '　<span class="muted">比团队 12 月消耗的估计（' + fmtCny(P.expect) + '）少 ' + fmtCny(P.expect - P.issued) : P.issued > P.need + 1000 ? '　<span class="muted">比建议金额（' + fmtCny(P.need) + '）多 ' + fmtCny(P.issued - P.need) + '，多下的部分验收后返还' : '')
-                        : '<span class="bad">还没下：要下 <b>' + fmtCny(P.toIssue) + '</b></span>')
+                        : '<span class="bad">还没下：要下 <b>' + fmtCny(P.toIssue) + '</b></span>　<span class="muted">' + (pd.late ? '已经过了 ' + pd.due + ' 号，尽快' : pd.inWindow ? '下发中，' + pd.due + ' 号前下完' : pd.start + ' 号启动，' + pd.due + ' 号前下完') + '</span>')
       : '已在执行，预计执行 ' + fmtCny(YP.poWill);
     const cs = d.fund.cash.short, evs = d.fund.cash.events, minEv = evs.length ? evs.reduce((m, e) => e.avail < m.avail ? e : m, evs[0]) : null;
     const leftPart = R.total - YP.poIssued;   // 到年底还要花的里面，还没冻结、要靠现在的钱和返还来出的部分
+    // ③ 1 月 PO 的钱从哪来：只算年底能达标和不考核的预算项；没达标的预算项里剩下的钱留给今年（只能走 OD）
+    const janBy = {};
+    (J.alloc || []).forEach(x => { janBy[x.name] = (janBy[x.name] || 0) + x.amt; });
+    // 花不完（用户 2026-11-29 的口径）：按 12 月 PO → 年终清算 → 1 月 PO 走完之后，手里还剩的钱，按预算项列出。两种：
+    //   没达标的预算项里，到目标还差、钱在手里，但 12 月的 PO 已下、只能走 OD，按现在的 OD 安排花不掉的（keep）
+    //   各预算项超出目标的部分，留给 1 月 PO 之后还剩的（spare）
+    const keepL = d.rows.filter(r => r.keep > 500), keepT = sum(keepL, r => r.keep);
+    const spareL = d.rows.filter(r => r.spare > 500), spareT = sum(spareL, r => r.spare);
+    const noMoney = Math.max(0, d.short.total - keepT);   // 到不了目标、但手里没有钱的那部分（钱没到账，或钱本身不够）——这不是"花不完"
     const issues = [].concat(c.checks.length ? ['两表不符 ' + c.checks.length + ' 项'] : [], (c.team.hasPoCfg && (c.team.attN.bad || c.team.attF.bad)) ? ['团队配置和实际对不上'] : [], (d.poNoFc && d.poNoFc.length) ? ['有 ' + d.poNoFc.length + ' 张 PO 认不出属于哪个月'] : []);
     html += '<div class="preview-line ye-calc" id="opsYeCalc"><b>年底测算</b><span class="muted">（按现在的情况推到 12 月 31 日）</span>' +
-      '<div class="yc-row"><span class="yc-k">12 月 PO</span><span>' + poSt + (YP.poIssued > 0.5 ? '　<span class="muted">钱已冻结，年底预计执行 ' + fmtCny(YP.poWill) + '</span>' : '') + '</span></div>' +
-      '<div class="yc-row"><span class="yc-k">到年底还要花</span><span><b>' + fmtCny(R.total) + '</b>　＝　' + (nov && R.odCur > 0.5 ? '11 月底 OD ' + fmtCny(R.odCur) + '　＋　' : '') + '12 月 PO 执行 ' + fmtCny(R.po) + '　＋　年终清算 ' + fmtCny(R.odDec) + (c.odYearEnd.manual > 0 ? '（按你的测算）' : '') + '</span></div>' +
-      '<div class="yc-row"><span class="yc-k">钱从哪来</span><span>' + (YP.poIssued > 0.5 ? '12 月 PO 的 ' + fmtCny(YP.poIssued) + ' 已冻结；其余 <b>' + fmtCny(leftPart) + '</b> 用 ' : '') +
+      '<div class="yc-row"><span class="yc-k">① 12 月 PO</span><span>' + poSt + (YP.poIssued > 0.5 ? '　<span class="muted">钱已冻结，年底预计执行 ' + fmtCny(YP.poWill) + '</span>' : '') + '</span></div>' +
+      '<div class="yc-row"><span class="yc-k">② 到年底还要花</span><span><b>' + fmtCny(R.total) + '</b>　＝　' + (nov && R.odCur > 0.5 ? '11 月底 OD ' + fmtCny(R.odCur) + '　＋　' : '') + '12 月 PO 执行 ' + fmtCny(R.po) + '　＋　年终清算 ' + fmtCny(R.odDec) + (c.odYearEnd.manual > 0 ? '（按你的测算）' : '') + '</span>' +
+        '<div class="sub">钱从哪来：' + (YP.poIssued > 0.5 ? '12 月 PO 的 ' + fmtCny(YP.poIssued) + ' 已冻结；其余 <b>' + fmtCny(leftPart) + '</b> 用 ' : '') +
         '现在可支配 ' + fmtCny(YP.have) + '　＋　冻结返还 ' + fmtCny(refundAll) + '（12-15 前 ' + fmtCny(YP.refundPast) + '、12 月下旬 ' + fmtCny(YP.refundCur) + '）　→　' +
-        (cs ? '<span class="bad">不够：到 ' + esc(cs.when) + '（' + esc(cs.label) + '）时差 <b>' + fmtCny(cs.short) + '</b></span>' : '<span style="color:var(--green)">够 ✓</span>' + (minEv ? '，最紧的时候（' + esc(minEv.when) + '）手里还有 ' + fmtCny(minEv.avail) : '')) + '</span></div>' +
-      '<div class="yc-row"><span class="yc-k">冻结的钱</span><span>现在冻着 <b>' + fmtCny(c.poFrozen) + '</b>（' + c.openCnt + ' 张）：会执行掉 ' + fmtCny(c.poWillExec) + '，验收后返还 <b>' + fmtCny(c.poReturn) + '</b>' +
-        (d.poNoFc.length ? '，<span class="warn">另有 ' + fmtCny(sum(d.poNoFc, g => g.amount)) + '（' + d.poNoFc.length + ' 张）认不出属于哪个月，先核对</span>' : '') +
-        (refundAll > 500 ? '<div class="sub">返还的 ' + fmtCny(refundAll) + '：年终清算花掉 ' + fmtCny(rf.od) + '；<b>' + fmtCny(refundYear) + ' 今年花不了</b>' + (rf.jan > 500 ? '——其中 ' + fmtCny(rf.jan) + ' 能留给 1 月 PO' : '') + (rf.idle > 500 ? '，<span class="warn">' + fmtCny(rf.idle) + ' 连 1 月也用不上</span>' : '') + '</div>' : '') + '</span></div>' +
-      '<div class="yc-row"><span class="yc-k">年底结算后</span><span>手里剩 <b>' + fmtCny(YP.leftTotal) + '</b>：留给 1 月 PO ' + fmtCny(J.reserve) + '（团队 1 月要 ' + fmtCny(J.need) + (J.short > 0.5 ? '，<span class="bad">缺 ' + fmtCny(J.short) + '</span>' : ' ✓ 够') + '）' +
-        (d.unspent > 1000 ? '　｜　<span class="warn">花不掉 ' + fmtCny(d.unspent) + '</span>' : '') +
-        (d.short.total > 0.5 ? '　｜　<span class="bad">' + (d.assessed - d.hit) + ' 个来源到不了目标，差 ' + fmtCny(d.short.total) + '</span>' : '　｜　<span style="color:var(--green)">考核来源都能达标 ✓</span>') + '</span></div>' +
+        (cs ? '<span class="bad">不够：到 ' + esc(cs.when) + '（' + esc(cs.label) + '）时差 <b>' + fmtCny(cs.short) + '</b></span>' : '<span style="color:var(--green)">够 ✓</span>' + (minEv ? '，最紧的时候（' + esc(minEv.when) + '）手里还有 ' + fmtCny(minEv.avail) : '')) + '</div>' +
+        (refundAll > 500 ? '<div class="sub">冻结的钱：现在冻着 <b>' + fmtCny(c.poFrozen) + '</b>（' + c.openCnt + ' 张），会执行掉 ' + fmtCny(c.poWillExec) + '，验收后返还 <b>' + fmtCny(refundAll) + '</b>。返还的怎么用：年终清算花掉 ' + fmtCny(Math.min(rf.od, refundAll)) + '，留给 1 月 PO ' + fmtCny(Math.min(rf.jan, Math.max(0, refundAll - rf.od))) + (rf.idle > 500 ? '，1 月 PO 也用不上的 ' + fmtCny(rf.idle) : '') + '</div>' : '') +
+        (d.poNoFc.length ? '<div class="sub warn">另有 ' + fmtCny(sum(d.poNoFc, g => g.amount)) + '（' + d.poNoFc.length + ' 张）认不出属于哪个月，先核对</div>' : '') + '</span></div>' +
+      '<div class="yc-row"><span class="yc-k">③ 1 月 PO</span><span>按平月出勤需要 <b>' + fmtCny(J.need) + '</b>；能留 <b>' + fmtCny(J.reserve) + '</b>' +
+        (Object.keys(janBy).length ? '<span class="muted">（来自 ' + Object.keys(janBy).map(k => esc(k) + ' ' + fmtCny(janBy[k])).join('、') + '；只算各预算项超出目标的部分）</span>' : '') +
+        (J.short > 0.5 ? '，<span class="bad">缺 <b>' + fmtCny(J.short) + '</b></span>' : '，<span style="color:var(--green)">够 ✓</span>') +
+        (keepT > 500 ? '<div class="sub warn">没达标的预算项里，到目标还差的那部分钱 <b>' + fmtCny(keepT) + '</b> 留给今年（只能走 OD），没算进 1 月的钱</div>' : '') + '</span></div>' +
+      '<div class="yc-row"><span class="yc-k">④ 花不完</span><span>' +
+        (keepT > 500 ? '<span class="warn">没达标的预算项里有 <b>' + fmtCny(keepT) + '</b> 钱在手里、到目标还差这么多，但 12 月的 PO 已下、只能走 OD，按现在的 OD 安排花不掉</span>：' + keepL.map(r => esc(r.decName) + ' <b>' + fmtCny(r.keep) + '</b>' + (r.refundLeft > 500 ? '<span class="muted">（其中冻结返还 ' + fmtCny(Math.min(r.refundLeft, r.keep)) + '）</span>' : '')).join('、') +
+          '<div class="sub">' + gapWays(d, keepT) + '</div>' : '') +
+        (spareT > 500 ? (keepT > 500 ? '<div class="sub" style="margin-top:4px">' : '') + '留给 1 月 PO 之后还剩 <b>' + fmtCny(spareT) + '</b>（各预算项超出目标的部分）：' + spareL.map(r => esc(r.decName) + ' ' + fmtCny(r.spare)).join('、') +
+          '<div class="' + (keepT > 500 ? 'muted' : 'sub') + '">' + (keepT > 500 ? '想花掉：办法同上' : gapWays(d, spareT)) + '</div>' + (keepT > 500 ? '</div>' : '') : '') +
+        (keepT <= 500 && spareT <= 500 ? '<span style="color:var(--green)">没有 ✓</span>' : '') +
+        (noMoney > 1000 ? '<div class="sub bad">另有 ' + fmtCny(noMoney) + ' 到不了目标，是因为钱没到账或钱本身不够，不是花不完</div>' : '') + '</span></div>' +
       (issues.length ? '<div class="yc-row"><span class="yc-k">先核对</span><span class="bad">⚠ ' + issues.join('、') + '——上面的数是按现在的数据算的，核对后会更准</span></div>' : '') +
       '</div>';
   }
@@ -2522,11 +2601,11 @@ function renderOps(c, d, m) {
       (partsHtml(J.parts) || allocHtml(J.alloc)) +
       (J.odBackTotal > 0.5 ? '<div class="ins-sub warn">⚠ 下这张 PO 前，先把 <b>' + fmtCny(J.odBackTotal) + '</b> 的 OD 额度调回 IT外包（标〔〕的那些预算项）</div>' : '') +
       (!J.alloc.length && J.toIssue > 0 ? '<div class="ins-sub bad">没有可用的钱——达标后的结余不够</div>' : '') + planHtml() +
-      '<div class="ins-sub">' + (J.short > 0 ? '<span style="color:var(--red)">1 月 PO 缺 ' + fmtCny(J.short) + '：调低任一考核来源的目标 ' + fmtCny(J.short) + ' 即可补足（目标由你权衡）</span>' : '✓ 今年的结余够 1 月整月，团队不断档') +
+      '<div class="ins-sub">' + (J.short > 0 ? (() => { const keepSum = sum(d.rows, r => r.keep); return '<span style="color:var(--red)">1 月 PO 缺 ' + fmtCny(J.short) + '：' + janShortWhy(keepSum, keepSum >= J.short) + '</span>'; })() : '✓ 今年的结余够 1 月整月，团队不断档') +
       (J.fromRefund > 0 ? '　｜　其中 ' + fmtCny(J.fromRefund) + ' 要等往月 PO 在 12 月 15 日前验收返还' : '') + (J.fromCur > 0 ? '，' + fmtCny(J.fromCur) + ' 要等 11 月的 PO 在 12 月下旬验收返还' : '') + '</div></div>';
   } else if (P) {
     const basis = howTxt(P);
-    const late = c.today.m === c.curM && c.today.d > 20;   // 过了 20 号（下单的日子）
+    const late = c.poDue.late;   // 过了 25 号还没下完
     // "已下"是哪几张 PO：服务期覆盖下月、已经提前下的 PO 会从下月的 PO 金额里扣掉；不属于团队月度消耗的可以在这里直接剔除出决策
     const issuedHtml = (() => {
       if (!(P.issued > 0 && P.issuedList.length)) return '';
@@ -2541,7 +2620,7 @@ function renderOps(c, d, m) {
     if (P.toIssue <= 0) html += '<div class="ins ok" id="opsPo"><div class="ins-head">✓ ' + P.nextM + ' 月 PO 已下 ' + fmtCny(P.issued) + '，不用再下</div><div class="ins-sub">' +
       (P.issued < P.expect - 1000 ? '比团队 ' + P.nextM + ' 月消耗的估计（' + fmtCny(P.expect) + '）少 ' + fmtCny(P.expect - P.issued) + '；下多少由你定，这里只是告诉你差多少' : P.issued > P.need + 1000 ? '比建议金额（' + fmtCny(P.need) + '）多 ' + fmtCny(P.issued - P.need) + '，多下的部分验收后返还' : '和建议金额（' + fmtCny(P.need) + '）一致') + '</div>' + issuedHtml + planHtml() + '</div>';
     else html += '<div class="ins" id="opsPo">' +
-      '<div class="ins-head">① ' + (late ? '尽快下' : '20 号前下') + ' <b>' + P.nextM + ' 月 PO</b>：<b class="big">' + fmtCny(P.toIssue) + '</b></div>' +
+      '<div class="ins-head">① ' + (late ? '尽快下（已过 ' + c.poDue.due + ' 号）' : c.today.d >= c.poDue.start ? '下发中，' + c.poDue.due + ' 号前下完' : c.poDue.start + ' 号启动，' + c.poDue.due + ' 号前下完') + ' <b>' + P.nextM + ' 月 PO</b>：<b class="big">' + fmtCny(P.toIssue) + '</b></div>' +
       '<div class="ins-sub">' + basis + '</div>' + issuedHtml +
       ((P.parts && P.parts.length) ? partsHtml(P.parts)
         : (P.alloc.length ? allocHtml(P.alloc) : '<div class="ins-sub bad">可支配的钱不够，这张 PO 没有钱包可出' + (moneyWhy(c, d) ? '——' + moneyWhy(c, d) : '') + '</div>')) +
@@ -2638,18 +2717,19 @@ function renderOps(c, d, m) {
     const steps = [];
     if (nov && P) {
       if (YP.poIssued > 0.5) steps.push({ when: '已下', title: '12 月 PO 已下（' + new Set(P.issuedList.map(x => x.poNo)).size + ' 张，钱已冻结）', amt: YP.poIssued, from: walletsOf(w => w.poIssued), note: '服务期覆盖 12 月，预计 12 月执行' });
-      if (YP.poNext > 0.5) steps.push({ when: c.today.d > 20 ? '尽快' : '11-20', title: '下 12 月 PO（团队 12 月的消耗）', amt: YP.poNext, from: P.projs.length ? '从 ' + P.projs.map(x => '<b>' + esc(x) + '</b>').join('、') + ' 出' : '', note: '比例见 ①' + (poNoMoney > 0.5 ? '；<span class="bad">其中 ' + fmtCny(poNoMoney) + ' 没有钱可出</span>' : '') });
+      if (YP.poNext > 0.5) steps.push({ when: c.poDue.late ? '尽快' : '11-' + c.poDue.due, title: '下 12 月 PO（团队 12 月的消耗）', amt: YP.poNext, from: P.projs.length ? '从 ' + P.projs.map(x => '<b>' + esc(x) + '</b>').join('、') + ' 出' : '', note: '比例见 ①' + (poNoMoney > 0.5 ? '；<span class="bad">其中 ' + fmtCny(poNoMoney) + ' 没有钱可出</span>' : '') });
     }
     if (YP.curOd) steps.push({ when: c.curM + ' 月底', title: nov ? 'OD 扣 10 月的费用' : 'OD 年终清算（11 月 + 12 月 + 年终奖' + (c.odYearEnd.manual > 0 ? '，按你的测算' : '') + '）', amt: YP.curOd.need, from: odFrom(YP.curOd) });
     if (d.refundPast > 0.5) steps.push({ when: '12-15 前', title: '往月的 PO 验收，冻结的钱返还到账', amt: d.refundPast, from: walletsOf(w => w.refundPast), note: '到账后：转到 OD 可用于年终清算，也可用于 1 月 PO' });
     if (nov && d.refundCur > 0.5) steps.push({ when: '12 月下旬', title: '11 月这张 PO 多下的部分验收，返还到账', amt: d.refundCur, from: walletsOf(w => w.refundCur), note: '年终清算是月底才扣，赶得上但时间很紧；1 月 PO 要看下得早不早' });
     if (nov && YP.decOd) steps.push({ when: '12-31', title: 'OD 年终清算（11 月 + 12 月 + 年终奖' + (c.odYearEnd.manual > 0 ? '，按你的测算' : '') + '）', amt: YP.decOd.need, from: odFrom(YP.decOd) });
     if (d.short.total > 0.5) steps.push({ when: '年底', title: '按配置里的安排，这些来源到不了目标', amt: 0, gap: true,
-      from: d.short.list.map(x => esc(x.name) + ' 差 <b>' + fmtCny(x.short) + '</b>' + (x.un > 1000 ? '（钱还没到账）' : x.odAble > 1000 ? '（钱还在 ' + fmtCny(x.odAble) + '，只能靠 OD 花）' : '（钱本身不够）')).join('、'),
-      note: (gapSpend > 1000 ? gapWays(d, gapSpend) + '。' : '') + (gapNoMoney > 1000 ? '另有 ' + fmtCny(gapNoMoney) + ' 是这些来源的钱本身不够（都花了也到不了目标）。' : '') + (sum(d.short.list, x => Math.min(x.short, x.un || 0)) > 1000 ? '钱还没到账的先催 BA' : '') });
+      from: d.short.list.map(x => { const b = Math.min(x.short, x.odAble), a = Math.min(x.short - b, x.un || 0), c = x.short - b - a;
+        return esc(x.name) + ' 差 <b>' + fmtCny(x.short) + '</b>' + (b > 1000 ? '（钱在手里 ' + fmtCny(b) + '，只能靠 OD 花）' : '') + (a > 1000 ? (b > 1000 ? '；' : '（') + fmtCny(a) + ' 还没到账' + (b > 1000 ? '' : '）') : '') + (c > 1000 ? (b + a > 1000 ? '；' : '（') + fmtCny(c) + ' 的钱本身不够' + (b + a > 1000 ? '' : '）') : ''); }).join('、'),
+      note: (gapSpend > 1000 ? gapWays(d, gapSpend) + '。' : '') + (gapNoMoney > 1000 ? '另有 ' + fmtCny(gapNoMoney) + ' 是这些来源的钱本身不够（都花了也到不了目标）。' : '') + (sum(d.short.list, x => Math.min(Math.max(0, x.short - x.odAble), x.un || 0)) > 1000 ? '钱还没到账的先催 BA' : '') });
     steps.push({ when: nov ? '12-20' : '现在', title: '下 1 月 PO（用达标之后剩下的钱）', amt: J.reserve, from: (J.parts && J.parts.length) ? J.parts.map(partHtml).join('') : allocHtml(J.alloc),
-      note: '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>（只能满足 ' + (J.need > 0 ? Math.round(J.reserve / J.need * 100) : 0) + '%）' : '，✓ 够') + (J.odBackTotal > 0.5 ? '；其中 ' + fmtCny(J.odBackTotal) + ' 要先把 OD 额度调回 IT外包' : '') + (J.reserve - d.short.janAfterFill > 1000 ? '；达标缺口要是靠再挂 OD 补上，这里会少 ' + fmtCny(J.reserve - d.short.janAfterFill) : '') });
-    if (d.unspent > 10000) steps.push({ when: '年底', title: '达标并留足 1 月后还花不掉的钱', amt: d.unspent, from: walletsOf(w => (!w.jan && w.left > 10000 ? w.left : 0)), note: '找别人多挂 OD / 找别人在你的预算项下挂 PO' });
+      note: '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>（只能满足 ' + (J.need > 0 ? Math.round(J.reserve / J.need * 100) : 0) + '%）' : '，✓ 够') + (J.odBackTotal > 0.5 ? '；其中 ' + fmtCny(J.odBackTotal) + ' 要先把 OD 额度调回 IT外包' : '') + (sum(d.rows, x => x.keep) > 500 ? '；能留的钱只算各预算项超出目标的部分——没达标的预算项里，到目标还差的 ' + fmtCny(sum(d.rows, x => x.keep)) + ' 留给今年（只能走 OD），没算进来' : '') });
+    if (d.unspent > 500) steps.push({ when: '年底', title: '达标、留足 1 月 PO 之后还剩的钱（花不完）', amt: d.unspent, from: d.rows.filter(r => r.spare > 500).map(r => esc(r.decName) + ' ' + fmtCny(r.spare)).join('、'), note: '各预算项超出目标的部分。想花掉：找别人多挂 OD / 找别人在你的预算项下挂 PO' });
     const odMust = (YP.curOd ? YP.curOd.need : 0) + (YP.decOd ? YP.decOd.need : 0);
     const must = YP.poWill + odMust;   // 到年底还要花多少：12 月的 PO 将执行（已下的 ＋ 这次下的）＋ OD
     const moneyIn = d.refundPast + (nov ? d.refundCur : 0);
@@ -2672,7 +2752,7 @@ function renderOps(c, d, m) {
       tileK('留给 1 月的 PO', fmtCny(J.reserve), '团队 1 月需要 ' + fmtCny(J.need) + (janUnfunded > 0.5 ? '，<b style="color:var(--red)">缺 ' + fmtCny(janUnfunded) + '</b>' : ' ✓ 够') + (YP.janMax > 0.5 ? ' · 理论上限 ' + fmtCny(YP.janMax) : ''), janUnfunded > 0.5 ? 'c-amber' : 'c-green') +
       '</div>' +
       '<div class="ins-sub">总账：到年底还要花 <b>' + fmtCny(must) + '</b>（12 月 PO 将执行 ' + fmtCny(YP.poWill) + ' ＋ OD ' + fmtCny(odMust) + '）＋ 留给 1 月 <b>' + fmtCny(J.reserve) + '</b> ＝ <b>' + fmtCny(must + J.reserve) + '</b>；钱的来源：' + (YP.poIssued > 0.5 ? '12 月 PO 已冻结 ' + fmtCny(YP.poIssued) + ' ＋ ' : '') + '现在可用 ' + fmtCny(YP.have) + ' ＋ 验收返还 ' + fmtCny(moneyIn) + ' ＝ <b>' + fmtCny(YP.poIssued + YP.have + moneyIn) + '</b>。' + verdict + '</div>' +
-      (YP.janMax > 0.5 ? '<div class="ins-sub muted">留给 1 月的钱 = 各来源达标之后的结余，理论上限 ' + fmtCny(YP.janMax) + '；其中约 ' + fmtCny(YP.beyond) + ' 被超出目标的执行占用（12 月的 PO、OD 超出目标的部分，今年必须花）。想给 1 月多留：调低某些来源的目标，或催 BA 把没到账的预算补齐。</div>' : '') +
+      (YP.janMax > 0.5 ? '<div class="ins-sub muted">留给 1 月的钱 = 各来源达标之后的结余，理论上限 ' + fmtCny(YP.janMax) + '；其中约 ' + fmtCny(YP.beyond) + ' 被超出目标的执行占用（12 月的 PO、OD 超出目标的部分，今年必须花）。想给 1 月多留：催 BA 把没到账的预算补齐（到了以后，超出目标的部分能给 1 月）' + (sum(d.rows, r => r.keep) > 500 ? '；或调低没达标来源的目标（它们留给今年的钱有 ' + fmtCny(sum(d.rows, r => r.keep)) + '，调低了就腾给 1 月）' : '') + '。</div>' : '') +
       (c.curM >= 11 ? '<div class="ins-sub muted">明年的规划下来后：用顶栏切到明年 → 开启新年（复制今年的规划和参数，再改金额）→ 明年首页有「新年测算」（团队人数够不够、能留多少给后年 1 月）。1 月的 PO 按今年的结余下；到看 2 月的 PO 时，明年的预算还没到账看板会提醒。</div>' : '') +
       '<div class="tbl-wrap"><table class="tbl tbl-steps"><thead><tr><th>时间</th><th>动作</th><th class="num">金额</th><th>钱从哪来</th></tr></thead><tbody>' +
       steps.map(s => '<tr' + (s.gap ? ' class="gap-row"' : '') + '><td class="muted" style="white-space:nowrap">' + s.when + '</td><td><b>' + s.title + '</b></td><td class="num">' + (s.gap ? '<span class="muted">—</span>' : '<b>' + fmtCny(s.amt) + '</b>') + '</td><td>' + (s.from || '') + (s.note ? '<div class="muted" style="margin-top:2px">' + s.note + '</div>' : '') + '</td></tr>').join('') +
@@ -2694,7 +2774,7 @@ function renderOps(c, d, m) {
       const st = !r.assessed ? '<span class="muted">' + (r.unmatched ? '未关联' : '不考核') + '</span>' : r.notGranted ? '<span style="color:var(--red)">未到账</span>'
         : r.hit ? (r.rate > r.target + 0.02 ? '<span style="color:var(--green)">✓ 超出 ' + fmtPct(r.rate - r.target) + '</span>' : '<span style="color:var(--green)">✓</span>')
         : '<span style="color:var(--red)">✗ 差 ' + fmtCny(r.short) + '</span>' + (r.odAble > r.tol ? '<div class="sub warn">钱还在，只能靠 OD 花 ' + fmtCny(r.odAble) + '</div>' : '');
-      const leftTxt = r.jan > 0 ? '留1月 ' + fmtCny(r.jan) : (r.left > 1000 ? '花不掉 ' + fmtCny(r.left) : '<span class="muted">—</span>');
+      const leftTxt = [r.jan > 0 ? '留1月 ' + fmtCny(r.jan) : '', r.keep > 500 ? '<span class="warn">留给今年 ' + fmtCny(r.keep) + '</span>' : '', r.spare > 500 ? '花不掉 ' + fmtCny(r.spare) : ''].filter(Boolean).join('<br>') || '<span class="muted">—</span>';
       return '<tr' + (r.notGranted ? ' style="opacity:.7"' : '') + '><td><b>' + esc(r.name) + '</b>' + (r.platName && r.platName !== r.name ? '<div class="sub muted">系统：' + esc(r.platName) + '</div>' : '') + (c.hasProj && r.wallets.length > 1 ? '<div class="sub muted">' + r.wallets.map(w => esc(w.proj) + ' ' + fmtCny(w.itw + w.od)).join(' / ') + '</div>' : '') + '</td>' +
         '<td class="num">' + (r.planCny ? fmtCny(r.planCny) : '—') + '</td><td class="num">' + (r.target != null && r.assessed ? fmtPct(r.target) : '—') + '</td>' +
         '<td class="num">' + fmtCny(r.exec) + '</td><td class="num">' + (r.willExec + (r.exclExec || 0) > 0 ? fmtCny(r.willExec + (r.exclExec || 0)) : '<span class="muted">—</span>') + (r.exclExec > 0.5 ? '<span class="muted" title="其中 ' + fmtCny(r.exclExec) + ' 是剔除出决策的 PO 还会执行的（别的团队在花你的预算）"> *</span>' : '') + '</td><td class="num">' + (r.gap > 0 ? fmtCny(r.gap) : '<span class="muted">—</span>') + '</td>' +
@@ -2702,7 +2782,7 @@ function renderOps(c, d, m) {
         '<td class="num">' + (r.po > 0 ? fmtCny(r.po) : '<span class="muted">—</span>') + (r.poNext > 0 ? '<div class="sub">本月 ' + fmtCny(r.poNext) + '</div>' : '') + '</td><td class="num">' + (r.odExec > 0 ? fmtCny(r.odExec) : '<span class="muted">—</span>') + '</td><td class="num">' + (r.jan > 0 ? fmtCny(r.jan) : '<span class="muted">—</span>') + '</td>' +
         '<td class="num">' + (r.planCny ? fmtPct(r.rate) : '—') + '</td><td>' + st + '</td><td class="num">' + leftTxt + '</td></tr>';
     }).join('') +
-    '</tbody></table></div><div class="muted" style="margin-top:6px">缺口 = 规划×目标 − 已执行 − 在途将执行。后续 PO 和 OD 都先花还有缺口的来源（缺口大的优先），缺口补齐了才花别的来源；OD 在年底先用验收返还（这笔钱只有 OD 这一条路）；1 月 PO 用达标之后的 IT外包 结余。达标与否按配置里的安排算，配置里没有的 OD 不替你假设。' + (d.exclExec > 0.5 ? ' 带 * 的「在途将执行」含剔除出决策的 PO 还会执行的 <b>' + fmtCny(d.exclExec) + '</b>：别的团队在花你的预算，计入该来源的年底执行，但不抵团队的月度 PO。' : '') + '</div>', false, 'sec');
+    '</tbody></table></div><div class="muted" style="margin-top:6px">缺口 = 规划×目标 − 已执行 − 在途将执行。后续 PO 和 OD 都先花还有缺口的来源（缺口大的优先），缺口补齐了才花别的来源；OD 在年底先用验收返还（这笔钱只有 OD 这一条路）；1 月 PO 只用各预算项超出目标的部分（没达标的，到目标还差的钱留给今年，只能走 OD）。达标与否按配置里的安排算，配置里没有的 OD 不替你假设。留给今年的 ＝ 没达标的预算项里到目标还差、钱在手里的；花不掉 ＝ 1 月 PO 之后还剩的。' + (d.exclExec > 0.5 ? ' 带 * 的「在途将执行」含剔除出决策的 PO 还会执行的 <b>' + fmtCny(d.exclExec) + '</b>：别的团队在花你的预算，计入该来源的年底执行，但不抵团队的月度 PO。' : '') + '</div>', false, 'sec');
   box.innerHTML = html;
 }
 // 提醒窗口的终点：1–4 月 → 5 月底；5–6 月 → 6 月底；7–10 月 → 10 月底；11–12 月 → 年底
@@ -2757,14 +2837,14 @@ function srcHealthHtml(c, d, opts) {
   const cnt = g => items.filter(x => x.g === g).length;
   const full = !!opts.full, open = full || healthOpen;
   const planLink = (pid, nm) => '<a class="lnk" data-action="goto:anchor" data-target="plan-' + esc(pid) + '" title="点到年初规划表里改（名称、金额、目标、挂在哪个 IT 预算项）">' + esc(nm) + '</a>';
-  // 到不了目标时，差的钱属于哪一种（按先后拆）：还没到账（催 BA）→ 还在这个 IT 预算项里、只能靠 OD 花 → 钱都到了也不够
+  // 到不了目标时，差的钱属于哪一种（按先后拆）：还在这个 IT 预算项里、只能靠 OD 花 → 还没到账（催 BA）→ 钱都到了也不够
   const whyShort = r => {
     const bits = [];
-    let need = r.short;
-    const a = Math.min(need, r.un || 0); need -= a;
+    let need = r.short;   // 先看手里的钱够不够补到目标（钱在手里、只能靠 OD 花），不够的部分才是没到账，再不够才是钱本身不够
     const b = Math.min(need, r.odAble); need -= b;
-    if (a > r.tol) bits.push('<b>' + fmtCny(a) + '</b> 还没到账——催 BA');
+    const a = Math.min(need, r.un || 0); need -= a;
     if (b > r.tol) bits.push('<b>' + fmtCny(b) + '</b> 还在这个 IT 预算项里' + (r.refund > 500 ? '（其中 ' + fmtCny(Math.min(r.refund, b)) + ' 冻在 PO 里，验收后回来）' : '') + '，只能靠再挂 OD 花');
+    if (a > r.tol) bits.push('<b>' + fmtCny(a) + '</b> 还没到账——催 BA');
     if (need > r.tol) bits.push('<b>' + fmtCny(need) + '</b> 的钱本身不够，都花了也到不了目标');
     return '差的钱：' + bits.join('；');
   };
@@ -2882,14 +2962,15 @@ function buildVerdict(c, d) {
   if (!d || !c.snap) return null;
   const O = d.od, J = d.jan;
   const miss = d.rows.filter(r => r.assessed && !r.hit && r.short > 3000);   // 只差零头的不算
-  let A = 0, B = 0, C = 0; const needBa = new Set(), bNames = [], cNames = [];   // 到不了目标的钱按原因拆：还没到账 / 只能靠再挂 OD 花 / 钱都到了也不够
+  let A = 0, B = 0, C = 0, nBad = 0, nWait = 0; const needBa = new Set(), bNames = [], cNames = [];   // nBad：照做也到不了目标的来源数；nWait：钱到了就能达标的   // 到不了目标的钱按原因拆：只能靠再挂 OD 花（钱在手里）/ 还没到账 / 钱都到了也不够
   miss.forEach(r => {
-    let need = r.short;
-    const a = Math.min(need, r.un || 0); need -= a;
+    let need = r.short;   // 先看手里的钱够不够补到目标，不够的部分才是没到账（手里的钱够补的，到不到账都不影响达标）
     const b = Math.min(need, r.odAble); need -= b;
+    const a = Math.min(need, r.un || 0); need -= a;
     A += a; B += b; C += need;
     if (a > 3000) needBa.add(r.code ? 'c:' + r.code : 'n:' + r.name);
-    if (a > 3000 || b > 3000) bNames.push(r.name);   // 花不完、但有对应的钱的来源（没到账的 ＋ 还在 IT 预算项里的）
+    if (b > 3000) bNames.push(r.name);   // 钱在手里、只能靠再挂 OD 花的来源（花不掉的）
+    if (b + need > 3000) nBad++; else if (a > 3000) nWait++;
     if (need > 3000) cNames.push(r.name);
   });
   d.baList.forEach(b => needBa.add(b.code ? 'c:' + b.code : 'n:' + b.name));   // 待办里在催的也算
@@ -2904,7 +2985,8 @@ function buildVerdict(c, d) {
     const cp = [];
     if (B > 3000) cp.push(fmtCny(B) + ' 的钱只能靠再挂 OD 花掉');
     if (C > 3000) cp.push(fmtCny(C) + ' 的钱本身不够，都花了也到不了目标');
-    ex.push(execLv === 'warn' ? miss.length + ' 个来源到不了目标，原因都是钱还没到账——到了就能达标' : miss.length + ' 个来源照做也到不了目标：' + cp.join('；'));
+    ex.push(execLv === 'warn' ? miss.length + ' 个来源到不了目标，原因都是钱还没到账——到了就能达标'
+      : nBad + ' 个来源照做也到不了目标：' + cp.join('；') + (nWait ? '；另 ' + nWait + ' 个是钱还没到账——到了就能达标' : ''));
   }
   if (short) mo.push((near ? '两个月内手里的钱就不够' : '钱会不够') + '：到 ' + esc(short.when) + '（' + esc(short.label) + '）时差 ' + fmtCny(short.short) +
     (moneyLv === 'warn' ? '，可等的钱回来就够' : '，就算规划的钱都到账、冻结的都回来也还差 ' + fmtCny(Math.max(0, short.short - levers))));
@@ -2922,9 +3004,10 @@ function buildVerdict(c, d) {
   if (baUnits.length) acts.push('<b>催 BA 到账</b> ' + fmtCny(baAmt) + '（' + baUnits.map(u => esc(u.name)).join('、') + '）');
   if (O && O.lateRefund.length) acts.push('<b>抓紧验收</b>：年终清算有 ' + fmtCny(sum(O.lateRefund, p => p.refundCur)) + ' 要等 11 月 PO 的钱（12 月下旬才到账），时间很紧');
   else if (short && frozen > 1000) acts.push('<b>催验收</b>：冻在 PO 里的 ' + fmtCny(frozen) + ' 验收后才回来');
-  if (A + B > 3000) acts.push('<b>年底有 ' + fmtCny(A + B) + ' 花不完</b>（' + bNames.map(esc).join('、') + '）：' + gapWays(d, A + B) + (A > 3000 ? '；其中 ' + fmtCny(A) + ' 还没到账，先催 BA' : ''));
+  if (B > 3000) acts.push('<b>年底有 ' + fmtCny(B) + ' 花不掉</b>（' + bNames.map(esc).join('、') + '）：' + gapWays(d, B));
+  else if (A > 3000 && !baUnits.length) acts.push('<b>到不了目标的钱里 ' + fmtCny(A) + ' 还没到账</b>——先催 BA');
   if (C > 3000) acts.push('<b>钱本身不够</b>：' + fmtCny(C) + '（' + cNames.map(esc).join('、') + '）——这些来源的钱都花了也到不了目标');
-  if (d.yearEnd && J && J.short > 500) acts.push('<b>1 月 PO 缺 ' + fmtCny(J.short) + '</b>：调低某个来源的目标就能补足');
+  if (d.yearEnd && J && J.short > 500 && sum(d.rows, r => r.keep) >= J.short) acts.push('<b>1 月 PO 缺 ' + fmtCny(J.short) + '</b>：调低某个没达标来源的目标就能补足（目标由你权衡）');   // 腾不出钱的情况不算"要你处理"，只在那行结论里写缺多少
   if (c.checks.length || teamBad) acts.push('<b>先核对数据</b>：' + [c.checks.length ? '两表不符 ' + c.checks.length + ' 项' : '', teamBad ? '团队配置和实际对不上' : ''].filter(Boolean).join('、') + '——数据不对，上面的结论不可靠');
   return {
     lv, head, acts,
@@ -2934,12 +3017,22 @@ function buildVerdict(c, d) {
           (miss.length ? '，到不了的差 ' + fmtCny(sum(miss, r => r.short)) + (cp2.length === 1 && A > 3000 ? '，全部因为 ' + fmtCny(baAmt || A) + ' 规划了还没到账' : cp2.length ? '，其中 ' + cp2.join('、') : '')
             : '，总体预计年底 ' + fmtPct(c.forecastRate) + '（目标 ' + fmtPct(d.weightedTarget) + '）') },
       { k: '钱', lv: moneyLv, tag: moneyLv === 'ok' ? '没风险' : '有风险', goto: d.yearPlan ? 'opsYeCalc' : 'opsCash',
-        // 11、12 月先回答两件事（用户 2026-11-28）：到年底还要花多少钱；冻结的钱回来以后有多少花不了。明细在本周期操作的「年底测算」
+        // 11、12 月先回答两件事（用户 2026-11-28、11-29）：到年底还要花多少钱；1 月 PO 够不够。明细在本周期操作的「年底测算」
         txt: (d.yearPlan ? '到年底还要花 <b>' + fmtCny(d.yearPlan.rest.total) + '</b>（12 月 PO ' + fmtCny(d.yearPlan.poWill) + (d.yearPlan.poIssued > 0.5 ? '，其中 ' + fmtCny(d.yearPlan.poIssued) + ' 已冻结' : '') + '　＋　OD ' + fmtCny(d.yearPlan.rest.total - d.yearPlan.poWill) + '），' : '') +
           (!short ? '钱够' + (minEv ? '，最紧的时候（' + esc(minEv.when) + '）手里还有 ' + fmtCny(minEv.avail) : '')
           : '到 ' + esc(short.when) + '（' + esc(short.label) + '）时差 ' + fmtCny(short.short) + (short.near ? '，就在这两个月内' : '') + '；可等的钱：' +
             (function() { const p = []; if (d.ungrantedTotal > 1000) p.push('规划了还没到账 ' + fmtCny(d.ungrantedTotal)); if (frozen > 1000) p.push('冻在 PO 里 ' + fmtCny(frozen)); return p.length ? p.join('、') : '没有'; })()) +
-          (d.yearPlan && frozen > 500 ? '；冻结的钱验收后返还 <b>' + fmtCny(frozen) + '</b>，其中 <b>' + fmtCny(Math.max(0, frozen - d.yearPlan.refund.od)) + ' 今年花不了</b>' + (d.yearPlan.refund.jan > 500 ? '（能留给 1 月 PO ' + fmtCny(d.yearPlan.refund.jan) + '）' : '') : '') }
+          (d.yearPlan ? '；1 月 PO（按平月出勤）要 <b>' + fmtCny(d.jan.need) + '</b>，能留 <b>' + fmtCny(d.jan.reserve) + '</b>' + (d.jan.short > 0.5 ? '，<span class="bad">缺 ' + fmtCny(d.jan.short) + '</span>' : '，够 ✓') : '') },
+      // 花不完（用户 2026-11-29 的口径）：12 月 PO、年终清算、1 月 PO 都走完之后手里还剩的钱，按预算项列——
+      //   没达标的预算项里钱在手里、只能走 OD、按现在的安排花不掉的；各预算项超出目标的部分、1 月 PO 之后还剩的
+      d.yearPlan ? (() => {
+        const keepL = d.rows.filter(r => r.keep > 500), keepT = sum(keepL, r => r.keep);
+        const spareL = d.rows.filter(r => r.spare > 500), spareT = sum(spareL, r => r.spare);
+        const has = keepT > 500 || spareT > 500, nm = l => l.slice(0, 3).map(r => esc(r.decName)).join('、') + (l.length > 3 ? '等' : '');
+        return { k: '花不完', lv: has ? 'warn' : 'ok', tag: has ? '有' : '没有', goto: 'opsYeCalc',
+          txt: (keepT > 500 ? '钱在手里、按现在的安排花不掉的 <b>' + fmtCny(keepT) + '</b>（' + nm(keepL) + '，没达标、只能走 OD）' : '') +
+               (spareT > 500 ? (keepT > 500 ? '；' : '') + '1 月 PO 之后还剩 <b>' + fmtCny(spareT) + '</b>（' + nm(spareL) + '）' : '') + (!has ? '没有 ✓' : '') };
+      })() : null
     ]
   };
 }
@@ -2949,7 +3042,7 @@ function renderVerdict(c, d) {
   if (!v) { el.innerHTML = ''; return; }
   const mark = { ok: '✓', warn: '⚠', bad: '✗' }, tagOf = lv => 'tag ' + (lv === 'ok' ? 't-green' : lv === 'warn' ? 't-amber' : 't-red');
   el.innerHTML = '<div class="verdict v-' + v.lv + '"><div class="v-head"><span class="v-lab">本期结论</span><span class="muted">截至 ' + esc(String(c.snap.date || '').slice(5)) + '</span>　<b>' + mark[v.lv] + ' ' + v.head + '</b></div><div class="v-rows">' +
-    v.rows.map(r => '<div class="v-row"><span class="v-k">' + r.k + '</span><span class="' + tagOf(r.lv) + '">' + r.tag + '</span><span class="v-t">' + r.txt + '</span><a class="lnk" data-action="goto:anchor" data-target="' + r.goto + '">明细 ↓</a></div>').join('') +
+    v.rows.filter(Boolean).map(r => '<div class="v-row"><span class="v-k">' + r.k + '</span><span class="' + tagOf(r.lv) + '">' + r.tag + '</span><span class="v-t">' + r.txt + '</span><a class="lnk" data-action="goto:anchor" data-target="' + r.goto + '">明细 ↓</a></div>').join('') +
     '<div class="v-row"><span class="v-k">要你处理</span><span class="' + (v.acts.length ? tagOf(v.lv === 'bad' ? 'bad' : 'warn') : tagOf('ok')) + '">' + (v.acts.length ? v.acts.length + ' 件' : '没有') + '</span><span class="v-t">' +
       (v.acts.length ? v.acts.map(a => '<div>' + a + '</div>').join('') : '照这个月的待办做就行') + '</span><a class="lnk" data-action="goto:anchor" data-target="nowTodo">去待办 ↓</a></div>' +
     '</div></div>';
@@ -3391,7 +3484,7 @@ const smallBtn = (action, txt, cls, extra) => '<button class="btn small ' + (cls
 // 参数改完自动保存（和规划表一样）。在原有年度参数上改这几项：剔除名单、OD 锚定项目等其他设置要留着
 function saveParams() {
   const tg = parseFloat($('#meta-target').value), fx = parseFloat($('#meta-fx').value), bo = parseFloat($('#meta-bonus').value), fq = parseInt($('#meta-freq').value, 10), at = parseFloat($('#meta-attend').value);
-  const otP = parseFloat($('#meta-otpeople').value), fa = parseFloat($('#meta-fest').value), otS = String($('#meta-otskip').value || '').split(/[,，、\s]+/).filter(Boolean).map(Number);
+  const otP = parseFloat($('#meta-otpeople').value), otS = String($('#meta-otskip').value || '').split(/[,，、\s]+/).filter(Boolean).map(Number);
   const yeRaw = String(($('#meta-odyearend') || {}).value || '').trim(), ye = yeRaw === '' ? '' : parseFloat(yeRaw);   // 年终清算预计扣款：留空 = 按人数测算
   let msg = '';
   if (!(tg >= 50 && tg <= 100)) msg = '默认执行率目标应在 50~100';
@@ -3401,11 +3494,10 @@ function saveParams() {
   else if (!Number.isFinite(at) || at < 0.5 || at > 1.5) msg = '出勤系数应在 0.5~1.5';
   else if (!(otP >= 0 && otP <= 500)) msg = '上线周加班的人数应在 0~500';
   else if (otS.some(n => !(n >= 1 && n <= 12))) msg = '没有上线的月份应填 1~12 的数字，用逗号隔开';
-  else if (!(fa >= 0.5 && fa <= 1.5)) msg = '春节当月和 1 月的出勤系数应在 0.5~1.5';
   else if (ye !== '' && !(ye > 0 && ye < 1e9)) msg = '年终清算预计扣款应填一个金额（元），留空 = 按人数测算';
   if (msg) { warn(msg + '，已恢复成原来的值'); renderAll(); return false; }
   const yp = yearParams(curYear());
-  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '', otPeople: otP, otSkip: otS.join(','), festAttend: fa, odYearEnd: ye });
+  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '', otPeople: otP, otSkip: otS.join(','), odYearEnd: ye });
   state.meta.updateFreqDays = fq;
   paramSavedAt = Date.now();
   save();
@@ -3508,14 +3600,15 @@ function renderData() {
     // 建议金额怎么来的：满勤消耗 + 加班，乘出勤系数，再加安全垫。出勤系数两类月份各一个，下面列出各自是从哪几个月反推的
     const PX = d ? (d.isDec ? d.jan : d.po) : null;
     const attLine = (name, a, note) => '<tr><td><b>' + name + '</b><div class="sub">' + note + '</div></td><td class="num"><b>' + a.v.toFixed(3) + '</b></td><td>' +
-      (a.auto ? '从 ' + a.months.map(x => (x.yy !== Y ? x.yy + ' 年' : '') + x.mo + ' 月').join('、') + ' 的实际反推' + (a.bad ? '' : '')
-        : a.bad ? '<span class="bad">实际 ÷ 理论 = ' + a.r.toFixed(2) + '，差得太离谱，不可信——先核对数据；现在用的是参数里的值</span>' : '这类月份还没有实际数——用的是参数里的值') + '</td></tr>';
-    const mos = c.team.attN.months.concat(c.team.attF.months).sort((a, b) => a.yy - b.yy || a.mo - b.mo);
+      (a.auto ? '从 ' + a.months.map(x => (x.yy !== Y ? x.yy + ' 年 ' : '') + x.mo + ' 月').join('、') + ' 的实际反推' + (a.refs ? '，再和它旁边的平月（' + a.refs.map(x => x.mo + ' 月').join('、') + '）比：相对出勤 ' + a.rel.toFixed(2) : '')
+        : a.bad ? '<span class="bad">实际 ÷ 理论 = ' + a.r.toFixed(2) + (a.refs ? '，相对旁边平月 = ' + a.rel.toFixed(2) : '') + '，差得太离谱，不可信——先核对数据；现在按平月算</span>' : '还没有往年的数可参考——按平月算') + '</td></tr>';
+    const seenM = {};
+    const mos = c.team.attN.months.concat(c.team.attJan.months, c.team.attJan.refs, c.team.attCny.months, c.team.attCny.refs).filter(x => { const k = x.yy + '-' + x.mo; if (seenM[k]) return false; seenM[k] = 1; return true; }).sort((a, b) => a.yy - b.yy || a.mo - b.mo);
     need = '<h3 class="sec-title">PO 团队的月度需求怎么来的<span class="muted">　消耗 =（日额 × 工作日 + 上线周加班）× 出勤系数；建议金额 = 消耗 + 安全垫</span></h3>' +
       '<div class="sum-line">PO 团队 <b>' + hcOf(poT) + '</b> 人 · 日额 <b>' + fmtCny(c.team.poDaily) + '</b>　｜　上线周的周末加班：每场 <b>' + c.team.otPeople + '</b> 人 × 1 天，按 1 倍单价；没有上线的月份：' + (c.team.otSkip.length ? c.team.otSkip.join('、') + ' 月' : '无') +
       (PX ? '<br>' + (d.isDec ? '明年 1 月' : PX.nextM + ' 月') + '的建议金额：（日额 ' + fmtCny(PX.daily) + ' × ' + PX.wd + ' 个工作日' + (PX.ot > 0 ? ' ＋ 加班 ' + fmtCny(PX.ot) : '') + '）× 出勤 ' + PX.attend.v.toFixed(3) + ' = ' + fmtCny(PX.expect) + '，加安全垫 ' + fmtCny(PX.cushion) + '（' + (PX.attend.auto ? '半天日额' : '一天日额') + '）= <b>' + fmtCny(PX.need) + '</b>' : '') + '</div>' +
       '<div class="tbl-wrap"><table class="tbl"><thead><tr><th>出勤系数<div class="sub">实际执行 ÷（日额 × 工作日 + 加班）</div></th><th class="num">现在用的值</th><th>来处</th></tr></thead><tbody>' +
-      attLine('平月', c.team.attN, '平时有事才休') + attLine('春节当月和 1 月', c.team.attF, '调休到 1 月作废，大家集中在过年前后休') + '</tbody></table></div>' +
+      attLine('平月', c.team.attN, '平时有事才休') + attLine('1 月', c.team.attJan, '调休到 1 月作废，大家会休得多一些。默认按平月算，有往年的数才按「相对旁边平月」调整') + attLine('春节当月', c.team.attCny, '同上') + '</tbody></table></div>' +
       (mos.length
         ? '<div class="tbl-wrap"><table class="tbl" style="margin-top:8px"><thead><tr><th>月</th><th class="num">工作日</th><th class="num">满勤消耗<div class="sub">日额 × 工作日</div></th><th class="num">加班</th><th class="num">实际执行<div class="sub">PO 明细</div></th><th class="num">出勤<div class="sub">实际 ÷（满勤 + 加班）</div></th></tr></thead><tbody>' +
           mos.map(x => { const q = x.act / x.base; return '<tr><td>' + (x.yy !== Y ? x.yy + ' 年' : '') + x.mo + ' 月' + (c.team.isFest(x.yy, x.mo) ? ' <span class="tag t-amber">过年前后</span>' : '') + '</td><td class="num">' + x.wd + '</td><td class="num">' + fmtCny(x.th) + '</td><td class="num">' + (x.ot > 0 ? fmtCny(x.ot) : '<span class="muted">—</span>') + '</td><td class="num">' + fmtCny(x.act) + '</td><td class="num"><span class="' + (q < 0.7 || q > 1.3 ? 'bad' : Math.abs(q - 1) > 0.1 ? 'warn' : '') + '">' + q.toFixed(3) + '</span></td></tr>'; }).join('') +
@@ -3582,7 +3675,6 @@ function renderData() {
     pf('meta-otpeople', '上线周的周末加班：每场几个人', m.otPeople != null ? m.otPeople : 12, '1', '加班一天按 1 倍单价计入当月；加班只能换调休，所以全年的钱不变，只是把消耗在月份之间挪') +
     '<label class="field"><span class="field-label">没有上线的月份</span><input id="meta-otskip" data-param="1" type="text" value="' + esc(c.team.otSkip.join(',')) + '" placeholder="如 2,6"><span class="sub">这些月份没有加班；用逗号隔开</span></label>' +
     pf('meta-attend', '平月的出勤系数（实际数不可信时用它）', m.attendFactor != null ? m.attendFactor : 1, '0.05', '平时有事才休的月份。正常情况下自动从近 3 个平月的实际反推，这里只用在上不了自动的时候') +
-    pf('meta-fest', '春节当月和 1 月的出勤系数（还没有实际数时用它）', m.festAttend != null && +m.festAttend > 0 ? m.festAttend : 0.9, '0.05', '调休到次年 1 月作废，大家集中在过年前后休。有过年月份的实际数后自动反推') +
     pf('meta-freq', '数据更新提醒（天）', state.meta.updateFreqDays || 14, '1', '超过这么多天没导入平台数据，首页就提醒') +
     '</div><div class="muted" id="paramMsg" style="margin-top:6px">' + (Date.now() - paramSavedAt < 4000 ? '<span style="color:var(--green)">✓ 已保存</span>' : '改完点一下别处就保存。') + '</div>' + wdHtml;
 
