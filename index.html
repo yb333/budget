@@ -2598,12 +2598,13 @@ function renderBanner() {
     const days = d ? daysBetween(d, t) : null;
     if (days == null || days > freq) chips.push(label + '：' + (days == null ? '没记录导入时间' : days + ' 天没更新'));
   });
+  const fileKnown = !!(fileHandle || recentHandle);   // 设过数据文件：没连上时 fileHandle 是空的，只有 recentHandle 还记着上次的文件
   let fileChip = '';
-  if (fileHandle && !fileConnected) fileChip = '<span class="chip" style="border-color:var(--red);color:var(--red)">💾 数据文件未连接</span>';
-  else if (fileHandle && fileConnected) fileChip = '<span class="chip">💾 budget.json 已连接</span>';
-  if (fileHandle && !fileConnected) {
+  if (fileKnown && !fileConnected) fileChip = '<span class="chip" style="border-color:var(--red);color:var(--red)">💾 数据文件未连接</span>';
+  else if (fileKnown && fileConnected) fileChip = '<span class="chip">💾 budget.json 已连接</span>';
+  if (fileKnown && !fileConnected) {
     el.className = 'banner warn';
-    el.innerHTML = '⚠️ <b>数据文件未连接</b>：数据暂存浏览器缓存（不丢），点上方「📂 载入数据文件」重连一次即恢复自动同步。' + (chips.length ? '<br>数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') : '');
+    el.innerHTML = '⚠️ <b>数据文件未连接</b>：数据暂存浏览器缓存（不丢），点上方「📂 载入数据文件」重新连接（不用再选文件）即恢复自动同步。' + (chips.length ? '<br>数据待更新：' + chips.map(c => '<span class="chip">' + esc(c) + '</span>').join('') : '');
     $('#yearBadge').textContent = Y + ' 年度';
     return;
   }
@@ -3770,10 +3771,11 @@ function renderData() {
   const canReread = !!(dirHandle && !pvNoFile);
   const dataStale = upd('po').stale || upd('exec').stale;
   $('#dataMgmt').innerHTML =
-    row('💾', fileHandle ? (fileConnected ? 'ok' : 'warn') : 'none', '数据文件 budget.json',
-      fileHandle ? (fileConnected ? '已连接，每次改动自动写入' : '未连接——数据暂存浏览器缓存，不丢') : '还没设置',
+    row('💾', fileHandle ? (fileConnected ? 'ok' : 'warn') : (recentHandle ? 'warn' : 'none'), '数据文件 budget.json',
+      fileHandle ? (fileConnected ? '已连接，每次改动自动写入' : '未连接——数据暂存浏览器缓存，不丢') : (recentHandle ? '未连接——浏览器重启后要重新授权；数据暂存浏览器缓存，不丢。点「重新连接」就行，不用再选文件' : '还没设置'),
       '主数据存在仓库的 data/budget.json，随 git 走，清浏览器也不丢；浏览器里只是缓存。换电脑、换浏览器时 pull 后打开同一个文件即可。',
-      smallBtn('data:saveFile', fileHandle ? (fileConnected ? '立即写入一次' : '重新连接') : '选择数据文件', fileHandle ? '' : 'primary')) +
+      fileHandle ? smallBtn('data:saveFile', fileConnected ? '立即写入一次' : '重新连接')
+        : (recentHandle ? smallBtn('data:saveFile', '重新连接', 'primary') + smallBtn('data:openFile', '换一个文件', 'ghost', ' title="仓库挪了位置、文件改了名，或想换成别的数据文件时用"') : smallBtn('data:saveFile', '选择数据文件', 'primary'))) +
     row('📁', dirHandle ? (datasetPerm === 'granted' ? 'ok' : 'warn') : 'none', '数据集文件夹',
       dirHandle ? (datasetPerm === 'granted' ? '已连接' + (c.projects.length ? '：<b>' + c.projects.map(esc).join('、') + '</b>' : '') + (state.lastImportAt && inYear(state.lastImportAt, Y) ? '，上次导入 ' + esc(state.lastImportAt) : '')
         : '<span class="bad">要重新授权</span>——浏览器没有这个文件夹的读取权限，打开时的自动扫描被跳过了；点右边的「授权并扫描数据集」') : '还没设置',
@@ -4075,6 +4077,33 @@ function parseTeamLines(text) {
 function parseTeamTable(rows) {
   return parseTeamLines(rows.map(r => r.join('\t')).join('\n'));
 }
+// 重新连接数据文件（浏览器重启后会忘记授权，但上次用的文件还记着）：只向浏览器把读写权限要回来，不弹"选文件 / 另存为"的对话框。
+// 浏览器缓存和文件谁的更新就以谁为准（和打开页面时一样）：断开连接期间在浏览器里改的，连上后写回文件；git 拉下来的新文件，载入页面。
+// 以前这里直接用文件覆盖浏览器里的数据——断开期间做的改动一点"重连"就没了（用户 2026-11-28 反映每次打开都要重选数据文件，排查时发现）
+async function reconnectDataFile() {
+  if (!recentHandle || !recentHandle.requestPermission) return openDataFile();
+  let perm = 'prompt';
+  try { perm = await recentHandle.requestPermission({ mode: 'readwrite' }); }
+  catch (e) { return openDataFile(); }   // 记着的文件已经不在了（仓库挪了位置、文件改了名）：重新选
+  if (perm !== 'granted') { warn('浏览器没有允许读写这个文件：数据暂存浏览器缓存（不丢），下次再点一下「重新连接」'); return; }
+  let f;
+  try { f = await recentHandle.getFile(); }
+  catch (e) { warn('上次用的数据文件找不到了（仓库挪了位置，或文件改了名），请重新选择'); return openDataFile(); }
+  try {
+    const savedAt = +(localStorage.getItem('budgetDash.savedAt') || 0), localRaw = localStorage.getItem(LS_KEY);
+    if (localRaw && savedAt > f.lastModified) {   // 浏览器里的比文件新：以浏览器为准，连上后写回文件
+      fileHandle = recentHandle; fileConnected = true;
+      const ok = await writeThroughNow();
+      renderAll();
+      notify('已重新连接 ' + (f.name || 'budget.json') + '：浏览器里有比文件新的数据，已写回文件' + (ok ? '' : '（没写进去，权限可能过期；数据仍在浏览器缓存里）'));
+    } else {
+      await loadFromHandle(recentHandle, true);
+      notify('已重新连接 ' + (f.name || 'budget.json') + '（更新于 ' + new Date(f.lastModified).toLocaleString() + '）');
+    }
+  } catch (e) { warn('载入失败：' + e.message); }
+  const b = $('#quickLoadBtn'); if (b) b.style.display = 'none';
+  renderBanner();
+}
 async function saveToDataFile() {
   if (!window.showSaveFilePicker) {
     const blob = new Blob([JSON.stringify({ type: 'budget-dash-full', ...state }, null, 2)], { type: 'application/json' });
@@ -4084,6 +4113,8 @@ async function saveToDataFile() {
     return;
   }
   try {
+    if (!fileHandle && recentHandle && recentHandle.requestPermission) return reconnectDataFile();   // 记得上次的文件：只要回授权，不再弹「另存为」
+    if (fileHandle && !fileConnected) return reconnectDataFile();   // 授权过期了
     if (!fileHandle) {
       fileHandle = await window.showSaveFilePicker({
         suggestedName: 'budget.json',
@@ -4097,6 +4128,7 @@ async function saveToDataFile() {
     return;
   }
   const ok = await writeThroughNow();
+  if (ok) renderData();   // 数据管理那一行的状态和按钮立刻更新
   if (ok) notify('已写入 ' + (fileHandle.name || 'budget.json') + '。\n\n✅ 此后<b>每次变更自动同步写入</b>该文件（无需再点本按钮），数据随 git 走，清浏览器也不丢。'.replace(/<[^>]+>/g, ''));
   else warn('写入失败（权限可能已过期）：数据仍在浏览器缓存中，点顶部「📂 载入数据文件」重连后再试。');
 }
@@ -4303,11 +4335,7 @@ async function handleAction(action, el, e) {
   }
   if (action === 'data:openRecent') {
     if (!recentHandle) return;
-    try {
-      const perm = await recentHandle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { await loadFromHandle(recentHandle); fileConnected = true; renderBanner(); } else warn('未授权访问文件');
-    } catch (e) { warn('载入失败：' + e.message); }
-    return;
+    return reconnectDataFile();
   }
   if (action === 'data:export') return exportModal();
   if (action === 'export:full') return doExport('full');
