@@ -937,7 +937,7 @@ async function openDataFile() {
 }
 
 function defaultYearParams() {
-  return { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: '', excluded: [], otPeople: 12, otSkip: '2,6', festAttend: 0.9 };
+  return { fxRate: 7.03, execRateTarget: 0.95, bonusMonths: 3.5, attendFactor: 1, workdays: {}, lastHcCheck: '', excluded: [], otPeople: 12, otSkip: '2,6', festAttend: 0.9, odYearEnd: '' };   // odYearEnd：年终清算预计扣款（用户自己的测算总额），'' = 按人数测算
 }
 function defaultState() {
   const y = new Date().getFullYear();
@@ -1985,12 +1985,16 @@ function calc() {
     cost: mo => mo === 12 ? odTempCost(Y, 11) + odTempCost(Y, 12) * (1 + Math.max(0, (m.bonusMonths || 3.5) - 2)) : odTempCost(Y, mo - 1),
     hc: mo => mo === 12 ? sum(tempAt('od', Y, 12), v => v.headcount) : sum(tempAt('od', Y, mo - 1), v => v.headcount)
   };
+  // 年终清算那一笔（12 月 31 日）：用户可以按自己的测算直接给一个总额——绩效、入职时间、临时 OD 等因素都算在里面（用户 2026-11-28）。
+  // 填了就以它为准，平时每个月的扣减还是按配置算；清空就回到按人数测算。人数后来变了由用户自己改
+  const odYE = +(m.odYearEnd || 0) > 0 ? +m.odYearEnd : 0;
+  const odNeed = mo => (mo === 12 && odYE) ? odYE : (hasOdCfg ? odDeduct(mo) : odBase * odMult(mo));
   const odEst = {}, poEst = {};
-  if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = hasOdCfg ? odDeduct(mo) : odBase * odMult(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
+  if (started) for (let mo = curM; mo <= 12; mo++) { odEst[mo] = odNeed(mo); poEst[mo] = mo === asOf ? curWillExec : (mo > asOf ? needPo(mo) : 0); }
   const odFuture = sum(Object.entries(odEst), ([mo, v]) => +mo >= curM ? v : 0);
   // 全年逐月的团队消耗（给"新年测算"用：不管现在是几月都按整年算；人数含变动计划和上线周加班，乘出勤系数）
   const yearCost = { po: [], od: [] };
-  for (let mo = 1; mo <= 12; mo++) { yearCost.po.push(hasPoCfg ? basePo(Y, mo) * attendOf(Y, mo).v : 0); yearCost.od.push(hasOdCfg ? odDeduct(mo) : 0); }
+  for (let mo = 1; mo <= 12; mo++) { yearCost.po.push(hasPoCfg ? basePo(Y, mo) * attendOf(Y, mo).v : 0); yearCost.od.push(hasOdCfg ? odNeed(mo) : 0); }
   const poFuture = sum(Object.values(poEst));
 
   /* ================= 年底推演：每个来源从现在推到 12/31，本月的指令是推演的第一步 =================
@@ -2557,6 +2561,7 @@ shortList.forEach(x => { const r = srcRows.find(y => y.code === x.code && y.decN
     odMonthly, odAvg, odEst, odFuture, poFuture, poEst, forecastEnd, forecastRate,
     grantProg, checks, grantChecks, availTotal, remainTotal, itwFc,
     poExcludedRows, poExclAct, poExclActByCode, poExclWill, poExclFrozen, poExclAgg, poExclWillM,
+    odYearEnd: { manual: odYE, formula: hasOdCfg ? odDeduct(12) : odBase * odMult(12) },   // 年终清算：用户测算的总额（0 = 没填）和按人数测算的数
     workdays, yearCost, team: { poGroups, odGroups, poDaily, theoryOd, theoryPo, calibOd, attend, hasPoCfg, hasOdCfg, plan, odCostAt, hcAt,
       basePo, otCost, needPo, cushionPo, advisePo, attendOf, isFest, attN, attF, otPeople, otSkip,   // PO 月度需求：消耗 = basePo × 出勤系数；建议金额 = advisePo
       hcSummary: (yy, mo) => ({ po: sum(poGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('po', yy, mo), v => v.headcount) + sum(tempAt('po', yy, mo), v => v.headcount), od: sum(odGroups, g => hcAt(g, yy, mo)) + sum(virtualAt('od', yy, mo), v => v.headcount) + sum(tempAt('od', yy, mo), v => v.headcount) }) },
@@ -2624,7 +2629,7 @@ function miniBar(now, target, timeProg, fore, foreCls) {
     (fore != null ? '<div class="mk fore ' + (foreCls || '') + '" style="left:' + x(fore) + '" title="预计年底 ' + fmtPct(fore) + '"></div>' : '') +
     '</div>';
 }
-const odWhatOf = mo => mo === 12 ? '年终清算：11 月 + 12 月 + 年终奖' : mo === 6 ? '上半年清算：5 月 + 6 月' : (mo - 1) + ' 月的费用';   // 某个月底扣的是什么
+const odWhatOf = mo => mo === 12 ? ((+yearParams(curYear()).odYearEnd || 0) > 0 ? '年终清算：按你的测算' : '年终清算：11 月 + 12 月 + 年终奖') : mo === 6 ? '上半年清算：5 月 + 6 月' : (mo - 1) + ' 月的费用';   // 某个月底扣的是什么
 
 // 钱不够时先做什么——两件事分开说：规划了还没到账的催 BA（按规划看）；已经到账、冻在 PO 里的催验收
 function moneyWhy(c, d) {
@@ -2709,7 +2714,7 @@ function buildAgenda(c, d, m) {
     const days = state.meta.lastHcCheck ? daysBetween(state.meta.lastHcCheck, todayStr()) : null;
     if (days == null || days > 35) add({ key: 'hc', due: '本月', title: '<b>确认团队人数没变</b>', note: '上次确认：' + (state.meta.lastHcCheck || '从未') + '；有变化就改团队 Excel，放进数据集', btn: 'hc:confirm', btnTxt: '人数没变' });
   }
-  if (d && (c.curM === 5 || c.curM === 11)) add({ key: 'clear:' + c.curM, due: c.curM + ' 月底', title: '为 <b>' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算 + 年终奖') + '</b>做准备', note: '确认 OD 额度充足' + (c.curM === 11 ? '，并校准参数里的年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）' : '，必要时调拨'), goto: 'opsOd' });
+  if (d && (c.curM === 5 || c.curM === 11)) add({ key: 'clear:' + c.curM, due: c.curM + ' 月底', title: '为 <b>' + (c.curM === 5 ? '6 月上半年清算' : '12 月全年清算 + 年终奖') + '</b>做准备', note: '确认 OD 额度充足' + (c.curM === 11 ? (c.odYearEnd.manual > 0 ? '；年终清算按你的测算 ' + fmtCny(c.odYearEnd.manual) + '（按人数测算是 ' + fmtCny(c.odYearEnd.formula) + '）' : '，并把年终清算的数校准一下：在参数里直接填你测算的总额，或者改年终奖月数（当前 ' + (m.bonusMonths || 3.5) + '）') : '，必要时调拨'), goto: 'opsOd' });
 
   /* ---- 提醒：不用去操作系统，但要知道的 ---- */
   if (d) {
@@ -2978,10 +2983,10 @@ function renderOps(c, d, m) {
     const janUnfunded = Math.max(0, J.need - J.reserve);
     const steps = [];
     if (nov && P) steps.push({ when: '11-20', title: '下 12 月 PO（团队 12 月的消耗）', amt: YP.poNext, from: P.projs.length ? '从 ' + P.projs.map(x => '<b>' + esc(x) + '</b>').join('、') + ' 出' : '', note: '比例见 ①' + (poNoMoney > 0.5 ? '；<span class="bad">其中 ' + fmtCny(poNoMoney) + ' 没有钱可出</span>' : '') });
-    if (YP.curOd) steps.push({ when: c.curM + ' 月底', title: nov ? 'OD 扣 10 月的费用' : 'OD 年终清算（11 月 + 12 月 + 年终奖）', amt: YP.curOd.need, from: odFrom(YP.curOd) });
+    if (YP.curOd) steps.push({ when: c.curM + ' 月底', title: nov ? 'OD 扣 10 月的费用' : 'OD 年终清算（11 月 + 12 月 + 年终奖' + (c.odYearEnd.manual > 0 ? '，按你的测算' : '') + '）', amt: YP.curOd.need, from: odFrom(YP.curOd) });
     if (d.refundPast > 0.5) steps.push({ when: '12-15 前', title: '往月的 PO 验收，冻结的钱返还到账', amt: d.refundPast, from: walletsOf(w => w.refundPast), note: '到账后：转到 OD 可用于年终清算，也可用于 1 月 PO' });
     if (nov && d.refundCur > 0.5) steps.push({ when: '12 月下旬', title: '11 月这张 PO 多下的部分验收，返还到账', amt: d.refundCur, from: walletsOf(w => w.refundCur), note: '年终清算是月底才扣，赶得上但时间很紧；1 月 PO 要看下得早不早' });
-    if (nov && YP.decOd) steps.push({ when: '12-31', title: 'OD 年终清算（11 月 + 12 月 + 年终奖）', amt: YP.decOd.need, from: odFrom(YP.decOd) });
+    if (nov && YP.decOd) steps.push({ when: '12-31', title: 'OD 年终清算（11 月 + 12 月 + 年终奖' + (c.odYearEnd.manual > 0 ? '，按你的测算' : '') + '）', amt: YP.decOd.need, from: odFrom(YP.decOd) });
     if (d.short.total > 0.5) steps.push({ when: '年底', title: '按配置里的安排，这些来源到不了目标', amt: 0, gap: true,
       from: d.short.list.map(x => esc(x.name) + ' 差 <b>' + fmtCny(x.short) + '</b>' + (x.odAble > 1000 ? '（钱还在 ' + fmtCny(x.odAble) + '，只能靠 OD 花）' : '（钱不够）')).join('、'),
       note: (d.short.able > 1000 ? '钱还在的那部分：再挂约 ' + Math.ceil(d.short.able / Math.max(d.short.rate, 1)) + ' 个 OD，写进变动计划后自动计入上面的清算；' : '') + '钱不够的：还没到账的催 BA，其余调低目标或再挂 OD' });
@@ -3726,6 +3731,7 @@ const smallBtn = (action, txt, cls, extra) => '<button class="btn small ' + (cls
 function saveParams() {
   const tg = parseFloat($('#meta-target').value), fx = parseFloat($('#meta-fx').value), bo = parseFloat($('#meta-bonus').value), fq = parseInt($('#meta-freq').value, 10), at = parseFloat($('#meta-attend').value);
   const otP = parseFloat($('#meta-otpeople').value), fa = parseFloat($('#meta-fest').value), otS = String($('#meta-otskip').value || '').split(/[,，、\s]+/).filter(Boolean).map(Number);
+  const yeRaw = String(($('#meta-odyearend') || {}).value || '').trim(), ye = yeRaw === '' ? '' : parseFloat(yeRaw);   // 年终清算预计扣款：留空 = 按人数测算
   let msg = '';
   if (!(tg >= 50 && tg <= 100)) msg = '默认执行率目标应在 50~100';
   else if (!(fx > 0 && fx < 20)) msg = '汇率无效';
@@ -3735,9 +3741,10 @@ function saveParams() {
   else if (!(otP >= 0 && otP <= 500)) msg = '上线周加班的人数应在 0~500';
   else if (otS.some(n => !(n >= 1 && n <= 12))) msg = '没有上线的月份应填 1~12 的数字，用逗号隔开';
   else if (!(fa >= 0.5 && fa <= 1.5)) msg = '春节当月和 1 月的出勤系数应在 0.5~1.5';
+  else if (ye !== '' && !(ye > 0 && ye < 1e9)) msg = '年终清算预计扣款应填一个金额（元），留空 = 按人数测算';
   if (msg) { warn(msg + '，已恢复成原来的值'); renderAll(); return false; }
   const yp = yearParams(curYear());
-  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '', otPeople: otP, otSkip: otS.join(','), festAttend: fa });
+  state.years[curYear()] = Object.assign({}, yp, { fxRate: fx, execRateTarget: tg / 100, bonusMonths: bo, attendFactor: at, workdays: yp.workdays || {}, lastHcCheck: yp.lastHcCheck || '', otPeople: otP, otSkip: otS.join(','), festAttend: fa, odYearEnd: ye });
   state.meta.updateFreqDays = fq;
   paramSavedAt = Date.now();
   save();
@@ -3899,11 +3906,16 @@ function renderData() {
   }
   const hY = HOLIDAYS[Y] ? Y + ' 年：官方放假安排（含调休）' : (LUNAR_FEST[Y] ? Y + ' 年：按农历节日推算（国务院调休拼假无法预知，约有 2~4 天/年误差）' : Y + ' 年：固定节日 + 周末推算');
   wdHtml += '</div><div class="btn-row" style="margin-top:10px"><button class="btn small primary" data-action="wd:save">保存工作日</button><span class="muted">' + hY + '；留空用自动值。</span></div></details>';
+  const yeManual = c.odYearEnd.manual > 0, yeF = c.odYearEnd.formula || 0;   // 年终清算：用户测算的总额 vs 按人数测算
+  const yeHint = yeManual
+    ? '已按你的数算。按人数测算是 ' + fmtCny(yeF) + '，你的数比它' + (c.odYearEnd.manual >= yeF ? '多 ' : '少 ') + fmtCny(Math.abs(c.odYearEnd.manual - yeF)) + '；团队人数变了要自己改这里'
+    : (yeF > 0 ? '按人数测算是 ' + fmtCny(yeF) + '。绩效、入职时间、临时 OD 都算在你的数里；平时每个月的扣减不受影响' : '填 12 月 31 日那笔扣减的总额；平时每个月的扣减不受影响');
   $('#metaForm').innerHTML =
     '<div class="form-grid">' +
     pf('meta-fx', '汇率', m.fxRate, '0.01', '规划里的万美金折成人民币') +
     pf('meta-target', '默认执行率目标（%）', m.execRateTarget * 100, '0.5', nDefault ? '没单独设目标的 ' + nDefault + ' 个来源在用它；各来源自己的目标在规划表里设' : '各来源都设了自己的目标，这个现在没人用') +
-    pf('meta-bonus', '12 月年终奖扣减（几个月的月均）', m.bonusMonths, '0.5', '年终清算 = 11 月 + 12 月 + 这几个月') +
+    pf('meta-bonus', '12 月年终奖扣减（几个月的月均）', m.bonusMonths, '0.5', '年终清算 = 11 月 + 12 月 + 这几个月' + (yeManual ? '；已填了下面的测算，年终清算以它为准' : '')) +
+    '<label class="field"><span class="field-label">年终清算预计扣款（按你的测算，元）</span><input id="meta-odyearend" data-param="1" type="number" step="1000" min="0" value="' + (m.odYearEnd || '') + '" placeholder="留空 = 按人数测算"><span class="sub">' + yeHint + '</span></label>' +
     pf('meta-otpeople', '上线周的周末加班：每场几个人', m.otPeople != null ? m.otPeople : 12, '1', '加班一天按 1 倍单价计入当月；加班只能换调休，所以全年的钱不变，只是把消耗在月份之间挪') +
     '<label class="field"><span class="field-label">没有上线的月份</span><input id="meta-otskip" data-param="1" type="text" value="' + esc(c.team.otSkip.join(',')) + '" placeholder="如 2,6"><span class="sub">这些月份没有加班；用逗号隔开</span></label>' +
     pf('meta-attend', '平月的出勤系数（实际数不可信时用它）', m.attendFactor != null ? m.attendFactor : 1, '0.05', '平时有事才休的月份。正常情况下自动从近 3 个平月的实际反推，这里只用在上不了自动的时候') +
@@ -4366,7 +4378,7 @@ async function handleAction(action, el, e) {
     delete ypFrom.excluded;   // 预算来源的剔除按年独立：新年不沿用上年的剔除（来源可能不一样）
     ypFrom.workdays = {};     // 每月工作日的手工覆盖是上一年放假安排的微调，不带到新年（新年用官方放假表 / 自动值，不对再调）
     // PO 级的剔除（按 PO 编号）带进新年：跨年的长 PO 明年还会出现在明细里，应该继续不参与决策；对新年没有的 PO 编号不起作用
-    state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '' });
+    state.years[Y] = Object.assign({}, ypFrom, { lastHcCheck: '', odYearEnd: '' });   // 年终清算的测算是今年的事，不带进新年
     state.meta.lastHcCheck = '';   // 新年重新确认一次团队人数
     touch('plan'); save();
     notify(Y + ' 年度已开启：规划 ' + plansOf(Y).length + ' 项已复制。请到「数据管理」核对金额与汇率，然后正常导入新年数据。');
