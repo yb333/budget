@@ -593,10 +593,11 @@ async function writeThroughNow() {           // 立即把当前状态写入 budg
 function scheduleFileWrite() {               // 防抖 800ms 写穿；断连时静默（数据仍在 localStorage 缓存，重连后下一次写入同步）
   if (!fileHandle) return;
   clearTimeout(fileWriteTimer);
-  fileWriteTimer = setTimeout(writeThroughNow, 800);
+  fileWriteTimer = setTimeout(async () => { const ok = await writeThroughNow(); if (!ok && fileWriting) scheduleFileWrite(); }, 800);   // 上一次还没写完而被跳过的，等它写完再补一次，最后一次的状态不能漏
 }
 let recentHandle = null;                     // 上次用过的数据文件句柄（IndexedDB 持久记忆）
 let dirHandle = null;                        // 数据集文件夹句柄（平台导出文件都放这里）
+let datasetPerm = 'granted';                 // 数据集文件夹的读取权限。浏览器重启后可能要重新授权（'prompt'）：这时打开页面的自动扫描做不了，要在首页说清楚
 
 function idbOpen() {
   return new Promise((res, rej) => {
@@ -646,7 +647,7 @@ async function setDatasetDir() {
    而数据集文件夹里的文件没变就不会重读，于是刷新页面也还是旧结果。
    做法：每类一个版本号，改了这一类的解析逻辑（或导入时算好存下来的字段）就把号 +1；
    打开看板时发现数据里的版本号落后 → 把数据集文件夹里这一类文件全部重读一遍（文件没变也重读），不需要用户手动重导。 */
-const PARSE_VER = { po: 2, exec: 1, team: 1, grants: 1 };
+const PARSE_VER = { po: 3, exec: 2, team: 2, grants: 2 };   // 2026-11-28 四类全部 +1：数据集扫描有一段时间导入后没保存（见 scanDataset），把数据集里的文件全部重读一遍补回来
 const PARSE_KEYS = ['po', 'exec', 'team', 'grants'];
 const PARSE_NAME = { po: 'PO 明细', exec: '预算执行表', team: '团队配置', grants: '预算授予' };
 // 没有版本号的旧数据：PO 明细当作第 0 版（服务期识别改过，要重读）；执行表、团队配置当作第 1 版
@@ -666,13 +667,14 @@ function pickScanFiles(files, known, sigOf, verNeed) {
   }).map(it => Object.assign({}, it, { _new: known[sigOf(it)] == null }));
 }
 async function scanDataset(manual, force) {
-  if (!dirHandle) { if (manual) warn('请先设置数据集文件夹'); return false; }
+  if (!dirHandle) { datasetPerm = 'none'; if (manual) warn('请先设置数据集文件夹'); return false; }
   let perm = 'granted';
   try { perm = await dirHandle.queryPermission({ mode: 'read' }); } catch (e) { }
   if (perm !== 'granted') {
     try { perm = await dirHandle.requestPermission({ mode: 'read' }); } catch (e) { }
-    if (perm !== 'granted') { if (manual) warn('未授权读取该文件夹'); return false; }
+    if (perm !== 'granted') { datasetPerm = perm || 'prompt'; if (manual) warn('未授权读取该文件夹'); return false; }
   }
+  datasetPerm = 'granted';
   const files = [];
   try { await walkDir(dirHandle, files); } catch (e) { if (manual) warn('读取文件夹失败：' + e.message); return false; }
   let known = {};
@@ -706,8 +708,10 @@ async function scanDataset(manual, force) {
     onKind: (it, kind) => { known[sigOf(it)] = kind || 'unknown'; },
     onError: it => { known[sigOf(it)] = 'error'; }
   });
+  if (r.touched) save();   // 和手动导入一样：存下来并刷新页面。2026-11-23 重构时这一步丢了——文件读进了内存却没存，刷新就没；
+                           // 而文件已被记成「已导入」，之后再扫也不重读（2026-11-28 内网发现：换了新导出的文件，自动和手工扫描都像没读到）
   files.forEach(it => { if (known[sigOf(it)] == null) known[sigOf(it)] = 'unknown'; });
-  localStorage.setItem('budgetDash.dataset', JSON.stringify(known));
+  localStorage.setItem('budgetDash.dataset', JSON.stringify(known));   // 存下来以后才把文件记成已导入：万一没存上，下次扫描还会重读
   const left = finishVer(r.kinds);
   const reRead = verNeed.filter(k => r.kinds.indexOf(k) >= 0);
   const head = reRead.length
@@ -1045,7 +1049,7 @@ function load() {
   } catch (e) { state = defaultState(); }
 }
 function saveSilent() { localStorage.setItem(LS_KEY, JSON.stringify(state)); scheduleFileWrite(); }
-function save() { localStorage.setItem(LS_KEY, JSON.stringify(state)); try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { } renderAll(); }
+function save() { localStorage.setItem(LS_KEY, JSON.stringify(state)); try { localStorage.setItem('budgetDash.savedAt', String(Date.now())); } catch (e) { } scheduleFileWrite(); renderAll(); }   // 每次保存都写穿到 budget.json（防抖 800ms）——以前只有 saveSilent 会写穿
 function touch(key) { (state.updatedAt = state.updatedAt || {})[key] = todayStr(); }
 
 /* ================= 文件解析 ================= */
@@ -2697,6 +2701,8 @@ function buildAgenda(c, d, m) {
       note: '达标后的结余只够 ' + fmtCny(J.reserve) + '，团队 1 月需要 ' + fmtCny(J.need) + '——调低某个来源的目标就能补足（目标由你权衡）', btn: 'goto:data', btnTxt: '去调目标', goto: 'opsYear' });
   }
   /* 数据与配置 */
+  // 已经有「重读数据集」那条待办时不重复提醒（点哪条都是重新授权 + 扫描）
+  if (dirHandle && datasetPerm !== 'granted' && (c.snap || c.po) && !parseVerNeed().some(parseKindHasData)) add({ key: 'dsPerm', due: '尽快', lv: 'amber', title: '<b>数据集文件夹要重新授权</b>', note: '浏览器没有这个文件夹的读取权限，打开时的自动扫描被跳过了——点一下重新授权并扫描，新放进来的文件才会导进来', btn: 'dataset:scan', btnTxt: '授权并扫描' });
   /* 挂载：规划 → IT 预算项（多对一）。平台数据导入后才看得出哪条没挂；平台上有、规划里没有的 IT 预算项另算一条 */
   const noMount = c.snap ? c.plansY.filter(p => !p.dead && wusdOf(p) > 0 && !p.code) : [];
   if (noMount.length) add({ key: 'mount:' + noMount.map(p => p.id).join(','), due: '本月', title: '<b>' + noMount.length + ' 条规划还没挂 IT 预算项</b>', note: noMount.map(p => esc(p.name)).join('、') + '——挂上以后执行率才算得准；在年初规划表每行的「IT 预算项」里选，选完自动保存', goto: 'planCard' });
@@ -3768,10 +3774,11 @@ function renderData() {
       fileHandle ? (fileConnected ? '已连接，每次改动自动写入' : '未连接——数据暂存浏览器缓存，不丢') : '还没设置',
       '主数据存在仓库的 data/budget.json，随 git 走，清浏览器也不丢；浏览器里只是缓存。换电脑、换浏览器时 pull 后打开同一个文件即可。',
       smallBtn('data:saveFile', fileHandle ? (fileConnected ? '立即写入一次' : '重新连接') : '选择数据文件', fileHandle ? '' : 'primary')) +
-    row('📁', dirHandle ? 'ok' : 'none', '数据集文件夹',
-      dirHandle ? '已连接' + (c.projects.length ? '：<b>' + c.projects.map(esc).join('、') + '</b>' : '') + (state.lastImportAt && inYear(state.lastImportAt, Y) ? '，上次导入 ' + esc(state.lastImportAt) : '') : '还没设置',
+    row('📁', dirHandle ? (datasetPerm === 'granted' ? 'ok' : 'warn') : 'none', '数据集文件夹',
+      dirHandle ? (datasetPerm === 'granted' ? '已连接' + (c.projects.length ? '：<b>' + c.projects.map(esc).join('、') + '</b>' : '') + (state.lastImportAt && inYear(state.lastImportAt, Y) ? '，上次导入 ' + esc(state.lastImportAt) : '')
+        : '<span class="bad">要重新授权</span>——浏览器没有这个文件夹的读取权限，打开时的自动扫描被跳过了；点右边的「授权并扫描数据集」') : '还没设置',
       '每个花钱项目一个子文件夹（名字自己起，定后不改），该项目的执行表、PO 明细、预算授予都丢进去；团队 Excel 放根目录。打开看板自动扫描导入，重复的文件自动跳过。',
-      dirHandle ? smallBtn('dataset:scan', '扫描数据集', '', ' title="有新文件没自动导进来时点它"') + smallBtn('dataset:set', '更换文件夹') : smallBtn('dataset:set', '设置数据集文件夹', 'primary')) +
+      dirHandle ? smallBtn('dataset:scan', datasetPerm === 'granted' ? '扫描数据集' : '授权并扫描数据集', datasetPerm === 'granted' ? '' : 'primary', ' title="有新文件没自动导进来时点它"') + smallBtn('dataset:set', '更换文件夹') : smallBtn('dataset:set', '设置数据集文件夹', 'primary')) +
     row('📥', dataStale ? 'warn' : 'ok', '平台数据',
       'PO 明细 ' + upd('po').txt + '　·　执行表 ' + upd('exec').txt + '　·　预算授予 ' + (gUpd ? esc(gUpd) : '<span class="muted">还没导入</span>') + '　·　团队 ' + upd('team').txt,
       '平时靠数据集自动导入。临时手动导入（拖文件）时，执行表和预算授予要填属于哪个花钱项目。',
@@ -4529,7 +4536,8 @@ function renderAll() {
       const b2 = $('#datasetScanBtn'); if (b2) b2.style.display = '';
       let dp = 'granted';
       try { dp = await dh.queryPermission({ mode: 'read' }); } catch (e) { }
-      if (dp === 'granted') { await scanDataset(false); }
+      if (dp === 'granted') await scanDataset(false);
+      else { datasetPerm = dp || 'prompt'; renderNow(); renderData(); }   // 没有读取权限时自动扫描做不了：首页和数据管理里写明，让人点一下重新授权
     }
   } catch (e) { }
   // 解析规则变了的类别没能自动重读（没设数据集 / 没授权 / 文件夹里没有这类文件）：没有这类数据的直接记为已更新，有的留在首页提示
